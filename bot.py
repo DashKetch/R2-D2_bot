@@ -33,6 +33,44 @@ async def _post_to_log(guild: discord.Guild, embed: discord.Embed):
             pass
 
 
+async def _alert_sheets_fallback(operation: str, failures: list):
+    """
+    Ping CAN_VIEW_ALL_ROLE in SHEETS_ALERT_CHANNEL when one or both sheets
+    could not be updated. Only called when at least one destination failed.
+
+    failures: list of dicts with keys "target" ("Google Sheets" or "Local xlsx")
+              and "error" (str).
+    """
+    guild = discord.utils.get(bot.guilds)
+    if guild is None:
+        return
+    alert_channel = guild.get_channel(SHEETS_ALERT_CHANNEL)
+    if alert_channel is None:
+        return
+    can_view_role = guild.get_role(CAN_VIEW_ALL_ROLE)
+    ping  = can_view_role.mention if can_view_role else "@mods"
+    names = " and ".join(f["target"] for f in failures)
+    embed = discord.Embed(
+        title=f"⚠️ Strike Data Could Not Be Written to {names}",
+        colour=discord.Color.yellow(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Operation", value=operation, inline=False)
+    for f in failures:
+        embed.add_field(name=f"❌ {f['target']} Error", value=f"`{f['error'][:200]}`", inline=False)
+    if any(f["target"] == "Google Sheets" for f in failures):
+        embed.add_field(
+            name="Action Required",
+            value="Run `/updatestrikes` to sync the local backup to Google Sheets once it's available again.",
+            inline=False,
+        )
+    embed.set_footer(text="Check the bot console for full error details.")
+    try:
+        await alert_channel.send(content=ping, embed=embed)
+    except discord.Forbidden:
+        pass
+
+
 # ── Spreadsheet helpers ───────────────────────────────────────────────────────
 
 HEADERS = ["Moderator", "Date command used", "Username", "Strike (1 or 2)", "Reason"]
@@ -127,7 +165,8 @@ def _local_append(moderator: str, username: str, strike_number: int, reason: str
 # ── Primary API functions (Google Sheets first, local fallback) ───────────────
 
 def _append_strike_row(moderator: str, username: str, strike_number: int, reason: str):
-    """Append a strike to Google Sheets. Falls back to local xlsx on any error."""
+    """Write a strike row to both Google Sheets and local xlsx. Alerts if either fails."""
+    import asyncio
     row_data = [
         moderator,
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -135,24 +174,39 @@ def _append_strike_row(moderator: str, username: str, strike_number: int, reason
         strike_number,
         reason,
     ]
+    failures = []
+
+    # ── Google Sheets ─────────────────────────────────────────────────────────
     try:
         ws = _get_gsheet()
         ws.append_row(row_data, value_input_option="USER_ENTERED")
-        # Colour the Strike column cell based on strike number
-        all_vals  = ws.col_values(1)          # col A — find the row we just wrote
-        new_row   = len(all_vals)             # last populated row
+        all_vals    = ws.col_values(1)
+        new_row     = len(all_vals)
         strike_color = (
-            {"red": 0.75, "green": 0.0, "blue": 0.0}   # red for strike 2
+            {"red": 0.75, "green": 0.0, "blue": 0.0}
             if strike_number == 2
-            else {"red": 1.0, "green": 0.4, "blue": 0.0}  # orange for strike 1
+            else {"red": 1.0, "green": 0.4, "blue": 0.0}
         )
         ws.format(f"D{new_row}", {
             "textFormat": {"bold": True, "foregroundColor": strike_color}
         })
         print(f"[Sheets] Strike row written to Google Sheet (row {new_row})")
     except Exception as e:
-        print(f"[Sheets] Google Sheets write failed ({e}), writing to local fallback.")
+        print(f"[Sheets] Google Sheets write failed: {e}")
+        failures.append({"target": "Google Sheets", "error": str(e)})
+
+    # ── Local xlsx ────────────────────────────────────────────────────────────
+    try:
         _local_append(moderator, username, strike_number, reason)
+        print("[Sheets] Strike row written to local xlsx.")
+    except Exception as e:
+        print(f"[Sheets] Local xlsx write failed: {e}")
+        failures.append({"target": "Local xlsx", "error": str(e)})
+
+    # ── Alert only if something failed ────────────────────────────────────────
+    if failures:
+        asyncio.run_coroutine_threadsafe(
+            _alert_sheets_fallback("Write strike row", failures), bot.loop)
 
 
 def _get_strikes_for_user(target: discord.Member) -> dict:
@@ -187,13 +241,15 @@ def _get_strikes_for_user(target: discord.Member) -> dict:
             "strike2": strike2_rows if strike2_rows else None,
         }
 
+    # Try Google Sheets first; fall back to local silently for reads
+    # (reads don't modify data so no alert needed — the write alert covers sync issues)
     try:
         ws   = _get_gsheet()
         rows = ws.get_all_values()[1:]   # skip header row
         print(f"[Sheets] Read {len(rows)} rows from Google Sheet")
         return _parse_rows(rows)
     except Exception as e:
-        print(f"[Sheets] Google Sheets read failed ({e}), reading from local fallback.")
+        print(f"[Sheets] Google Sheets read failed ({e}), reading from local xlsx.")
         _init_spreadsheet()
         wb   = openpyxl.load_workbook(SPREADSHEET_PATH, data_only=True)
         rows = [[cell for cell in row] for row in wb.active.iter_rows(min_row=2, values_only=True)]
@@ -270,74 +326,100 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
                 demoted_row = {"moderator": s2["moderator"], "date": s2["date"], "reason": s2["reason"]}
                 print(f"[Sheets] Demoted Strike 2 → Strike 1 at row {s2_row}")
 
-        return {"success": True, "message": "Appeal processed.",
-                "deleted_row": deleted_row, "demoted_row": demoted_row}
+        cloud_result = {"success": True, "deleted_row": deleted_row, "demoted_row": demoted_row}
 
     except Exception as e:
-        print(f"[Sheets] Google Sheets appeal failed ({e}), falling back to local xlsx.")
+        print(f"[Sheets] Google Sheets appeal failed: {e}")
+        cloud_result = {"success": False, "error": str(e)}
 
-    # ── Local xlsx fallback ───────────────────────────────────────────────────
-    _init_spreadsheet()
-    wb         = openpyxl.load_workbook(SPREADSHEET_PATH)
-    ws_local   = wb.active
-    strike1_rows, strike2_rows = [], []
+    # ── Local xlsx (always attempted) ─────────────────────────────────────────
+    local_result = {"success": False, "error": "Not attempted"}
+    try:
+        _init_spreadsheet()
+        wb         = openpyxl.load_workbook(SPREADSHEET_PATH)
+        ws_local   = wb.active
+        l_strike1, l_strike2 = [], []
 
-    for row_idx in range(2, ws_local.max_row + 1):
-        vals = [ws_local.cell(row=row_idx, column=c).value for c in range(1, 6)]
-        moderator, date, username, strike_num, reason = vals
-        if username is None:
-            continue
-        if str(username).lower() != target_str:
-            continue
-        entry = {
-            "row":       row_idx,
-            "moderator": str(moderator) if moderator else "Unknown",
-            "date":      str(date)      if date      else "Unknown",
-            "reason":    str(reason)    if reason    else "No reason given",
-        }
-        try:
-            snum = int(strike_num)
-        except (ValueError, TypeError):
-            continue
-        if snum == 1:
-            strike1_rows.append(entry)
-        elif snum == 2:
-            strike2_rows.append(entry)
+        for row_idx in range(2, ws_local.max_row + 1):
+            vals = [ws_local.cell(row=row_idx, column=c).value for c in range(1, 6)]
+            moderator, date, username, strike_num, reason = vals
+            if username is None:
+                continue
+            if str(username).lower() != target_str:
+                continue
+            entry = {
+                "row":       row_idx,
+                "moderator": str(moderator) if moderator else "Unknown",
+                "date":      str(date)      if date      else "Unknown",
+                "reason":    str(reason)    if reason    else "No reason given",
+            }
+            try:
+                snum = int(strike_num)
+            except (ValueError, TypeError):
+                continue
+            if snum == 1:
+                l_strike1.append(entry)
+            elif snum == 2:
+                l_strike2.append(entry)
 
-    if appeal_num == 1 and not strike1_rows:
-        return {"success": False, "message": f"{target.mention} has no Strike 1 on record.",
-                "deleted_row": None, "demoted_row": None}
-    if appeal_num == 2 and not strike2_rows:
-        return {"success": False, "message": f"{target.mention} has no Strike 2 on record.",
-                "deleted_row": None, "demoted_row": None}
+        if appeal_num == 1 and not l_strike1:
+            local_result = {"success": False, "error": "No Strike 1 found in local xlsx"}
+        elif appeal_num == 2 and not l_strike2:
+            local_result = {"success": False, "error": "No Strike 2 found in local xlsx"}
+        else:
+            l_deleted = l_demoted = None
+            if appeal_num == 2:
+                l_target = l_strike2[-1]
+                l_deleted = l_target
+                ws_local.delete_rows(l_target["row"])
+            else:
+                l_target = l_strike1[-1]
+                l_deleted = l_target
+                ws_local.delete_rows(l_target["row"])
+                if l_strike2:
+                    s2     = l_strike2[-1]
+                    s2_row = s2["row"] - (1 if s2["row"] > l_target["row"] else 0)
+                    ws_local.cell(row=s2_row, column=4, value=1)
+                    _cell_style(ws_local, s2_row, 4, 1, strike_num_col=True, strike_num=1)
+                    l_demoted = {"moderator": s2["moderator"], "date": s2["date"], "reason": s2["reason"]}
 
-    deleted_row = demoted_row = None
+            for r in range(2, ws_local.max_row + 1):
+                if ws_local.cell(row=r, column=1).value is None:
+                    break
+                for c in range(1, 6):
+                    fill_color = "D6E4F0" if (r % 2 == 0) else "FFFFFF"
+                    ws_local.cell(row=r, column=c).fill = PatternFill("solid", start_color=fill_color, end_color=fill_color)
 
-    if appeal_num == 2:
-        target_row  = strike2_rows[-1]
-        deleted_row = target_row
-        ws_local.delete_rows(target_row["row"])
-    else:
-        target_row  = strike1_rows[-1]
-        deleted_row = target_row
-        ws_local.delete_rows(target_row["row"])
-        if strike2_rows:
-            s2     = strike2_rows[-1]
-            s2_row = s2["row"] - (1 if s2["row"] > target_row["row"] else 0)
-            ws_local.cell(row=s2_row, column=4, value=1)
-            _cell_style(ws_local, s2_row, 4, 1, strike_num_col=True, strike_num=1)
-            demoted_row = {"moderator": s2["moderator"], "date": s2["date"], "reason": s2["reason"]}
+            wb.save(SPREADSHEET_PATH)
+            local_result = {"success": True, "deleted_row": l_deleted, "demoted_row": l_demoted}
+            print("[Sheets] Appeal written to local xlsx.")
 
-    for r in range(2, ws_local.max_row + 1):
-        if ws_local.cell(row=r, column=1).value is None:
-            break
-        for c in range(1, 6):
-            fill_color = "D6E4F0" if (r % 2 == 0) else "FFFFFF"
-            ws_local.cell(row=r, column=c).fill = PatternFill("solid", start_color=fill_color, end_color=fill_color)
+    except Exception as e:
+        print(f"[Sheets] Local xlsx appeal failed: {e}")
+        local_result = {"success": False, "error": str(e)}
 
-    wb.save(SPREADSHEET_PATH)
-    return {"success": True, "message": "Appeal processed.",
-            "deleted_row": deleted_row, "demoted_row": demoted_row}
+    # ── Alert if either failed ─────────────────────────────────────────────────
+    import asyncio
+    failures = []
+    if not cloud_result["success"]:
+        failures.append({"target": "Google Sheets", "error": cloud_result.get("error", "Unknown error")})
+    if not local_result["success"]:
+        failures.append({"target": "Local xlsx", "error": local_result.get("error", "Unknown error")})
+    if failures:
+        asyncio.run_coroutine_threadsafe(
+            _alert_sheets_fallback(f"Appeal Strike {appeal_num}", failures), bot.loop)
+
+    # ── Return result — prefer cloud, fall back to local ──────────────────────
+    if cloud_result["success"]:
+        return {"success": True, "message": "Appeal processed.",
+                "deleted_row": cloud_result["deleted_row"], "demoted_row": cloud_result["demoted_row"]}
+    if local_result["success"]:
+        return {"success": True, "message": "Appeal processed.",
+                "deleted_row": local_result["deleted_row"], "demoted_row": local_result["demoted_row"]}
+    # Both failed — return the cloud error as the primary message
+    return {"success": False,
+            "message": f"{target.mention} — appeal could not be processed on either sheet. Check the alert channel.",
+            "deleted_row": None, "demoted_row": None}
 
 
 # ── Bot events ────────────────────────────────────────────────────────────────
@@ -1004,6 +1086,124 @@ async def skipplace(
 
 @skipplace.error
 async def skipplace_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
+    except Exception:
+        pass
+
+
+# ── /updatestrikes ────────────────────────────────────────────────────────────
+
+@tree.command(
+    name="updatestrikes",
+    description="Sync the local strike backup to Google Sheets. Only needed after a fallback.",
+    guild=discord.Object(id=GUILD_ID),
+)
+async def updatestrikes(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    invoker       = interaction.user
+    guild         = interaction.guild
+    can_view_role = guild.get_role(CAN_VIEW_ALL_ROLE)
+    has_permission = can_view_role in invoker.roles if can_view_role else False
+
+    if not has_permission:
+        await interaction.followup.send(
+            "❌ You don't have permission to use `/updatestrikes`.", ephemeral=True)
+        return
+
+    # ── Check local file exists and has data ──────────────────────────────────
+    if not os.path.exists(SPREADSHEET_PATH):
+        await interaction.followup.send(
+            "ℹ️ No local backup file found — nothing to sync.", ephemeral=True)
+        return
+
+    _init_spreadsheet()
+    wb       = openpyxl.load_workbook(SPREADSHEET_PATH, data_only=True)
+    ws_local = wb.active
+    local_rows = []
+    for row in ws_local.iter_rows(min_row=2, values_only=True):
+        if row[0] is None and row[2] is None:
+            continue   # skip completely empty rows
+        local_rows.append(list(row))
+
+    if not local_rows:
+        await interaction.followup.send(
+            "ℹ️ Local backup is empty — nothing to sync.", ephemeral=True)
+        return
+
+    # ── Connect to Google Sheets ──────────────────────────────────────────────
+    try:
+        ws_cloud = _get_gsheet()
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Could not connect to Google Sheets: `{e}`\nTry again once the issue is resolved.",
+            ephemeral=True)
+        return
+
+    # ── Wipe cloud sheet (data rows only) and rewrite from local ─────────────
+    try:
+        cloud_rows = ws_cloud.get_all_values()
+        last_cloud_row = len(cloud_rows)
+
+        # Clear everything after the header row
+        if last_cloud_row > 1:
+            ws_cloud.delete_rows(2, last_cloud_row - 1)
+
+        if not local_rows:
+            await interaction.followup.send(
+                "ℹ️ Local backup is empty after filtering — nothing was written.",
+                ephemeral=True)
+            return
+
+        # Write all local rows in one batch call
+        ws_cloud.append_rows(local_rows, value_input_option="USER_ENTERED")
+
+        # Re-apply strike number formatting
+        all_vals = ws_cloud.col_values(1)
+        for i, row in enumerate(local_rows):
+            sheet_row = i + 2   # +1 for header, +1 for 1-indexing
+            try:
+                strike_num = int(row[3])
+            except (ValueError, TypeError):
+                continue
+            strike_color = (
+                {"red": 0.75, "green": 0.0, "blue": 0.0}
+                if strike_num == 2
+                else {"red": 1.0, "green": 0.4, "blue": 0.0}
+            )
+            ws_cloud.format(f"D{sheet_row}", {
+                "textFormat": {"bold": True, "foregroundColor": strike_color}
+            })
+
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Sync failed while writing to Google Sheets: `{e}`", ephemeral=True)
+        return
+
+    # ── Post success to alert channel ─────────────────────────────────────────
+    alert_channel = guild.get_channel(SHEETS_ALERT_CHANNEL)
+    embed = discord.Embed(
+        title="✅ Google Sheets Synced from Local Backup",
+        colour=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Rows written", value=str(len(local_rows)), inline=True)
+    embed.add_field(name="Synced by",    value=invoker.mention,       inline=True)
+    embed.set_footer(text="Google Sheets is now up to date with the local backup.")
+    if alert_channel:
+        try:
+            await alert_channel.send(embed=embed)
+        except discord.Forbidden:
+            pass
+
+    await interaction.followup.send(
+        f"✅ Synced **{len(local_rows)}** row(s) from local backup to Google Sheets.",
+        ephemeral=True,
+    )
+
+
+@updatestrikes.error
+async def updatestrikes_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     try:
         await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
     except Exception:
