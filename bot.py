@@ -1210,6 +1210,156 @@ async def updatestrikes_error(interaction: discord.Interaction, error: app_comma
         pass
 
 
+# ── /duprole ──────────────────────────────────────────────────────────────────
+
+@tree.command(
+    name="duprole",
+    description="Duplicate an existing role's permissions into a new role with a new name, colour, and position.",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    old_role_id  = "ID of the role to copy permissions from",
+    name         = "Name for the new role",
+    color_code   = "Hex colour code for the new role (e.g. #FF5733 or FF5733)",
+    position     = "Position of the new role in the hierarchy (1 = bottom, higher = further up)",
+)
+async def duprole(
+    interaction : discord.Interaction,
+    old_role_id : str,
+    name        : str,
+    color_code  : str,
+    position    : str,
+):
+    await interaction.response.defer(ephemeral=True)
+    invoker = interaction.user
+    guild   = interaction.guild
+
+    # ── Permission check ──────────────────────────────────────────────────────
+    dup_role_1 = guild.get_role(DUP_ROLE_1)
+    dup_role_2 = guild.get_role(DUP_ROLE_2)
+    dup_role_3 = guild.get_role(DUP_ROLE_3)
+    has_permission = any(
+        role and role in invoker.roles
+        for role in (dup_role_1, dup_role_2, dup_role_3)
+    )
+    if not has_permission:
+        await interaction.followup.send(
+            "❌ You don't have permission to use `/duprole`.", ephemeral=True)
+        return
+
+    # ── Validate old_role_id ──────────────────────────────────────────────────
+    try:
+        old_role_id_int = int(old_role_id)
+    except ValueError:
+        await interaction.followup.send(
+            f"❌ `{old_role_id}` is not a valid role ID. Paste the raw number.",
+            ephemeral=True)
+        return
+
+    source_role = guild.get_role(old_role_id_int)
+    if source_role is None:
+        await interaction.followup.send(
+            f"❌ No role found with ID `{old_role_id_int}`.", ephemeral=True)
+        return
+
+    # ── Validate position ─────────────────────────────────────────────────────
+    try:
+        position_int = int(position)
+        if position_int < 1:
+            raise ValueError
+    except ValueError:
+        await interaction.followup.send(
+            f"❌ `{position}` is not a valid position. Enter a whole number ≥ 1.",
+            ephemeral=True)
+        return
+
+    # ── Validate and parse colour ─────────────────────────────────────────────
+    hex_str = color_code.lstrip("#").strip()
+    if len(hex_str) != 6:
+        await interaction.followup.send(
+            f"❌ `{color_code}` is not a valid hex colour. Use a 6-digit code like `#FF5733` or `FF5733`.",
+            ephemeral=True)
+        return
+    try:
+        colour_int = int(hex_str, 16)
+        new_colour = discord.Color(colour_int)
+    except ValueError:
+        await interaction.followup.send(
+            f"❌ `{color_code}` contains invalid hex characters.", ephemeral=True)
+        return
+
+    # ── Create the new role with the source role's permissions ────────────────
+    try:
+        new_role = await guild.create_role(
+            name        = name,
+            permissions = source_role.permissions,
+            colour      = new_colour,
+            hoist       = source_role.hoist,
+            mentionable = source_role.mentionable,
+            reason      = f"/duprole: copied from {source_role.name} by {invoker}",
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ I don't have permission to create roles. Make sure I have **Manage Roles**.",
+            ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Failed to create role: `{e}`", ephemeral=True)
+        return
+
+    # ── Move the role to the requested position ───────────────────────────────
+    try:
+        await new_role.edit(position=position_int,
+                            reason=f"/duprole: set position to {position_int}")
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"✅ Role {new_role.mention} created with copied permissions, but I couldn't set its "
+            f"position (missing permission or position is above my highest role). "
+            f"You can drag it manually in Server Settings → Roles.",
+            ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(
+            f"✅ Role {new_role.mention} created, but position could not be set: `{e}`",
+            ephemeral=True)
+        return
+
+    # ── Build permission summary for confirmation ─────────────────────────────
+    perm_names = [
+        perm.replace("_", " ").title()
+        for perm, value in source_role.permissions
+        if value
+    ]
+    perm_summary = ", ".join(perm_names) if perm_names else "No permissions"
+    if len(perm_summary) > 1000:
+        perm_summary = perm_summary[:997] + "..."
+
+    embed = discord.Embed(
+        title="✅ Role Duplicated",
+        colour=new_colour,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="New Role",       value=new_role.mention,     inline=True)
+    embed.add_field(name="Copied From",    value=source_role.mention,  inline=True)
+    embed.add_field(name="Position",       value=str(position_int),    inline=True)
+    embed.add_field(name="Colour",         value=f"`#{hex_str.upper()}`", inline=True)
+    embed.add_field(name="Hoisted",        value="Yes" if source_role.hoist else "No", inline=True)
+    embed.add_field(name="Mentionable",    value="Yes" if source_role.mentionable else "No", inline=True)
+    embed.add_field(name="Permissions Copied", value=perm_summary,     inline=False)
+    embed.set_footer(text=f"Created by {invoker}")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@duprole.error
+async def duprole_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
+    except Exception:
+        pass
+
+
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
