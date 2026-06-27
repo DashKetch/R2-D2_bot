@@ -1360,6 +1360,325 @@ async def duprole_error(interaction: discord.Interaction, error: app_commands.Ap
         pass
 
 
+# ── /cutchannelperms ──────────────────────────────────────────────────────────
+
+@tree.command(
+    name="cutchannelperms",
+    description="Move a role's permission overwrite from one role to another in a channel, then remove the first.",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    channel_id    = "ID of the channel to modify",
+    source_role_id = "ID of the role whose permissions will be moved (and removed)",
+    target_role_id = "ID of the role that will receive those permissions",
+)
+async def cutchannelperms(
+    interaction    : discord.Interaction,
+    channel_id     : str,
+    source_role_id : str,
+    target_role_id : str,
+):
+    await interaction.response.defer(ephemeral=True)
+    invoker = interaction.user
+    guild   = interaction.guild
+
+    # ── Permission check (DUP_ROLEs) ─────────────────────────────────────────
+    dup_role_1 = guild.get_role(DUP_ROLE_1)
+    dup_role_2 = guild.get_role(DUP_ROLE_2)
+    dup_role_3 = guild.get_role(DUP_ROLE_3)
+    has_permission = any(
+        role and role in invoker.roles
+        for role in (dup_role_1, dup_role_2, dup_role_3)
+    )
+    if not has_permission:
+        await interaction.followup.send(
+            "❌ You don't have permission to use `/cutchannelperms`.", ephemeral=True)
+        return
+
+    # ── Validate IDs ──────────────────────────────────────────────────────────
+    try:
+        channel_id_int = int(channel_id)
+    except ValueError:
+        await interaction.followup.send(
+            f"❌ `{channel_id}` is not a valid channel ID.", ephemeral=True)
+        return
+
+    try:
+        source_role_id_int = int(source_role_id)
+    except ValueError:
+        await interaction.followup.send(
+            f"❌ `{source_role_id}` is not a valid role ID.", ephemeral=True)
+        return
+
+    try:
+        target_role_id_int = int(target_role_id)
+    except ValueError:
+        await interaction.followup.send(
+            f"❌ `{target_role_id}` is not a valid role ID.", ephemeral=True)
+        return
+
+    if source_role_id_int == target_role_id_int:
+        await interaction.followup.send(
+            "❌ Source and target roles must be different.", ephemeral=True)
+        return
+
+    # ── Resolve objects ───────────────────────────────────────────────────────
+    channel = guild.get_channel(channel_id_int)
+    if channel is None:
+        await interaction.followup.send(
+            f"❌ No channel found with ID `{channel_id_int}`.", ephemeral=True)
+        return
+
+    source_role = guild.get_role(source_role_id_int)
+    if source_role is None:
+        await interaction.followup.send(
+            f"❌ No role found with ID `{source_role_id_int}`.", ephemeral=True)
+        return
+
+    target_role = guild.get_role(target_role_id_int)
+    if target_role is None:
+        await interaction.followup.send(
+            f"❌ No role found with ID `{target_role_id_int}`.", ephemeral=True)
+        return
+
+    # ── Read source overwrite ─────────────────────────────────────────────────
+    source_overwrite = channel.overwrites_for(source_role)
+
+    if source_overwrite.is_empty():
+        await interaction.followup.send(
+            f"⚠️ {source_role.mention} has no permission overwrite in {channel.mention}. "
+            f"Nothing to move.", ephemeral=True)
+        return
+
+    # Build a human-readable summary before we touch anything
+    allow_perms = [
+        perm.replace("_", " ").title()
+        for perm, value in source_overwrite
+        if value is True
+    ]
+    deny_perms = [
+        perm.replace("_", " ").title()
+        for perm, value in source_overwrite
+        if value is False
+    ]
+
+    # ── Apply overwrite to target role ────────────────────────────────────────
+    try:
+        await channel.set_permissions(
+            target_role,
+            overwrite=source_overwrite,
+            reason=f"/cutchannelperms: moved from {source_role.name} by {invoker}",
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"❌ I don't have permission to edit overwrites in {channel.mention}. "
+            f"Make sure I have **Manage Channels** and my role is above both roles.",
+            ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Failed to apply permissions to {target_role.mention}: `{e}`",
+            ephemeral=True)
+        return
+
+    # ── Remove source role overwrite ──────────────────────────────────────────
+    try:
+        await channel.set_permissions(
+            source_role,
+            overwrite=None,
+            reason=f"/cutchannelperms: removed after move to {target_role.name} by {invoker}",
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"✅ Permissions copied to {target_role.mention}, but I couldn't remove "
+            f"{source_role.mention}'s overwrite from {channel.mention} (missing Manage Channels). "
+            f"Please remove it manually.",
+            ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(
+            f"✅ Permissions copied to {target_role.mention}, but failed to remove "
+            f"{source_role.mention}'s overwrite: `{e}`",
+            ephemeral=True)
+        return
+
+    # ── Confirmation embed ────────────────────────────────────────────────────
+    embed = discord.Embed(
+        title="✅ Channel Permissions Moved",
+        colour=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Channel",      value=channel.mention,     inline=True)
+    embed.add_field(name="Moved From",   value=source_role.mention, inline=True)
+    embed.add_field(name="Moved To",     value=target_role.mention, inline=True)
+
+    if allow_perms:
+        embed.add_field(
+            name="✅ Allowed",
+            value=", ".join(allow_perms) if len(", ".join(allow_perms)) <= 1024
+                  else ", ".join(allow_perms)[:1021] + "...",
+            inline=False,
+        )
+    if deny_perms:
+        embed.add_field(
+            name="❌ Denied",
+            value=", ".join(deny_perms) if len(", ".join(deny_perms)) <= 1024
+                  else ", ".join(deny_perms)[:1021] + "...",
+            inline=False,
+        )
+    if not allow_perms and not deny_perms:
+        embed.add_field(name="Permissions", value="Neutral (all unset)", inline=False)
+
+    embed.set_footer(text=f"Run by {invoker}")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@cutchannelperms.error
+async def cutchannelperms_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
+    except Exception:
+        pass
+
+
+# ── /roleids ──────────────────────────────────────────────────────────────────
+
+@tree.command(
+    name="roleids",
+    description="Display the role ID of up to 10 mentioned roles.",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    role1  = "Role 1",
+    role2  = "Role 2",
+    role3  = "Role 3",
+    role4  = "Role 4",
+    role5  = "Role 5",
+    role6  = "Role 6",
+    role7  = "Role 7",
+    role8  = "Role 8",
+    role9  = "Role 9",
+    role10 = "Role 10",
+)
+async def roleids(
+    interaction : discord.Interaction,
+    role1       : discord.Role,
+    role2       : discord.Role = None,
+    role3       : discord.Role = None,
+    role4       : discord.Role = None,
+    role5       : discord.Role = None,
+    role6       : discord.Role = None,
+    role7       : discord.Role = None,
+    role8       : discord.Role = None,
+    role9       : discord.Role = None,
+    role10      : discord.Role = None,
+):
+    await interaction.response.defer(ephemeral=True)
+
+    roles = [r for r in [role1, role2, role3, role4, role5,
+                          role6, role7, role8, role9, role10] if r is not None]
+
+    embed = discord.Embed(
+        title="🔖 Role IDs",
+        colour=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    lines = []
+    for role in roles:
+        # Colour swatch — use the role colour if it has one, otherwise grey
+        colour_hex = f"#{role.colour.value:06X}" if role.colour.value != 0 else "#99AAB5"
+        lines.append(f"{role.mention}` {role.id }`")
+
+    embed.description = "\n".join(lines)
+    embed.set_footer(text=f"Requested by {interaction.user} · {len(roles)} role{'s' if len(roles) != 1 else ''}")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@roleids.error
+async def roleids_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
+    except Exception:
+        pass
+
+
+# ── /channelids ───────────────────────────────────────────────────────────────
+ 
+@tree.command(
+    name="channelids",
+    description="Display the channel ID of up to 10 mentioned channels.",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    channel1  = "Channel 1",
+    channel2  = "Channel 2",
+    channel3  = "Channel 3",
+    channel4  = "Channel 4",
+    channel5  = "Channel 5",
+    channel6  = "Channel 6",
+    channel7  = "Channel 7",
+    channel8  = "Channel 8",
+    channel9  = "Channel 9",
+    channel10 = "Channel 10",
+)
+async def channelids(
+    interaction : discord.Interaction,
+    channel1    : discord.abc.GuildChannel,
+    channel2    : discord.abc.GuildChannel = None,
+    channel3    : discord.abc.GuildChannel = None,
+    channel4    : discord.abc.GuildChannel = None,
+    channel5    : discord.abc.GuildChannel = None,
+    channel6    : discord.abc.GuildChannel = None,
+    channel7    : discord.abc.GuildChannel = None,
+    channel8    : discord.abc.GuildChannel = None,
+    channel9    : discord.abc.GuildChannel = None,
+    channel10   : discord.abc.GuildChannel = None,
+):
+    await interaction.response.defer(ephemeral=True)
+ 
+    channels = [c for c in [channel1, channel2, channel3, channel4, channel5,
+                              channel6, channel7, channel8, channel9, channel10] if c is not None]
+ 
+    # Channel type icon mapping
+    def channel_icon(ch):
+        if isinstance(ch, discord.VoiceChannel):
+            return "🔊"
+        if isinstance(ch, discord.StageChannel):
+            return "🎙️"
+        if isinstance(ch, discord.ForumChannel):
+            return "🗂️"
+        if isinstance(ch, discord.CategoryChannel):
+            return "📁"
+        if getattr(ch, "news", False):
+            return "📢"
+        return "💬"
+ 
+    lines = []
+    for ch in channels:
+        icon = channel_icon(ch)
+        lines.append(f"{icon} {ch.mention}` {ch.id }`")
+ 
+    embed = discord.Embed(
+        title="📋 Channel IDs",
+        colour=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.description = "\n".join(lines)
+    embed.set_footer(text=f"Requested by {interaction.user} · {len(channels)} channel{'s' if len(channels) != 1 else ''}")
+ 
+    await interaction.followup.send(embed=embed, ephemeral=True)
+ 
+ 
+@channelids.error
+async def channelids_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
+    except Exception:
+        pass
+ 
+
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
