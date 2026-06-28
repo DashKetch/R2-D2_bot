@@ -748,6 +748,30 @@ async def place(
             f"Make sure my role is above it in the hierarchy.", ephemeral=True)
         return
 
+    # ── Remove placement queue roles ─────────────────────────────────────────
+    PLACEMENT_QUEUE_ROLE_IDS = [
+        1443794835587858433,  # Squad 60
+        1443794904969908315,  # Squad X
+        1443794792126353554,  # Delta Squad
+        1518749541501894757,  # ---SQUAD---
+        1518754676173045781,  # Shades
+        1453419667434770719,  # Commando
+        1518749744065675284,  # ---Status---
+    ]
+    roles_to_remove = [
+        guild.get_role(rid)
+        for rid in PLACEMENT_QUEUE_ROLE_IDS
+        if guild.get_role(rid) and guild.get_role(rid) in username.roles
+    ]
+    removed_roles = []
+    if roles_to_remove:
+        try:
+            await username.remove_roles(*roles_to_remove,
+                reason=f"Placement queue cleanup by {invoker}")
+            removed_roles = roles_to_remove
+        except discord.Forbidden:
+            pass   # Non-fatal — placement still succeeds; log embed will omit removed roles
+
     # ── Collect attachment URLs (never touch the files themselves) ────────────
     attachments = [a for a in [file1, file2, file3, file4, file5,
                                 file6, file7, file8, file9, file10] if a is not None]
@@ -775,6 +799,12 @@ async def place(
         ),
         inline=False,
     )
+    if removed_roles:
+        embed.add_field(
+            name="🗑️ Queue Roles Removed",
+            value=" ".join(r.mention for r in removed_roles),
+            inline=False,
+        )
     embed.set_footer(text="Files are hosted on Discord's CDN — not stored locally.")
 
     # ── If the first file is an image, set it as the embed image ─────────────
@@ -1036,6 +1066,30 @@ async def skipplace(
             f"Make sure my role is above it in the hierarchy.", ephemeral=True)
         return
 
+    # ── Remove placement queue roles ─────────────────────────────────────────
+    PLACEMENT_QUEUE_ROLE_IDS = [
+        1443794835587858433,  # Squad 60
+        1443794904969908315,  # Squad X
+        1443794792126353554,  # Delta Squad
+        1518749541501894757,  # ---SQUAD---
+        1518754676173045781,  # Shades
+        1453419667434770719,  # Commando
+        1518749744065675284,  # ---Status---
+    ]
+    roles_to_remove = [
+        guild.get_role(rid)
+        for rid in PLACEMENT_QUEUE_ROLE_IDS
+        if guild.get_role(rid) and guild.get_role(rid) in username.roles
+    ]
+    removed_roles = []
+    if roles_to_remove:
+        try:
+            await username.remove_roles(*roles_to_remove,
+                reason=f"Placement queue cleanup by {invoker}")
+            removed_roles = roles_to_remove
+        except discord.Forbidden:
+            pass   # Non-fatal — placement still succeeds; log embed will omit removed roles
+
     # ── Post to place channel ─────────────────────────────────────────────────
     place_channel = guild.get_channel(PLACE_CHANNEL_ID)
     if not place_channel:
@@ -1063,6 +1117,12 @@ async def skipplace(
         value=f"[{file1.filename}]({file1.url})",
         inline=False,
     )
+    if removed_roles:
+        embed.add_field(
+            name="🗑️ Queue Roles Removed",
+            value=" ".join(r.mention for r in removed_roles),
+            inline=False,
+        )
 
     # Embed image preview if the file is an image
     image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
@@ -1605,7 +1665,7 @@ async def roleids_error(interaction: discord.Interaction, error: app_commands.Ap
 
 
 # ── /channelids ───────────────────────────────────────────────────────────────
- 
+
 @tree.command(
     name="channelids",
     description="Display the channel ID of up to 10 mentioned channels.",
@@ -1637,10 +1697,10 @@ async def channelids(
     channel10   : discord.abc.GuildChannel = None,
 ):
     await interaction.response.defer(ephemeral=True)
- 
+
     channels = [c for c in [channel1, channel2, channel3, channel4, channel5,
                               channel6, channel7, channel8, channel9, channel10] if c is not None]
- 
+
     # Channel type icon mapping
     def channel_icon(ch):
         if isinstance(ch, discord.VoiceChannel):
@@ -1654,12 +1714,12 @@ async def channelids(
         if getattr(ch, "news", False):
             return "📢"
         return "💬"
- 
+
     lines = []
     for ch in channels:
         icon = channel_icon(ch)
         lines.append(f"{icon} {ch.mention}` {ch.id }`")
- 
+
     embed = discord.Embed(
         title="📋 Channel IDs",
         colour=discord.Color.blurple(),
@@ -1667,17 +1727,17 @@ async def channelids(
     )
     embed.description = "\n".join(lines)
     embed.set_footer(text=f"Requested by {interaction.user} · {len(channels)} channel{'s' if len(channels) != 1 else ''}")
- 
+
     await interaction.followup.send(embed=embed, ephemeral=True)
- 
- 
+
+
 @channelids.error
 async def channelids_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     try:
         await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
     except Exception:
         pass
- 
+
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
