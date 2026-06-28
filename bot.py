@@ -162,7 +162,7 @@ def _local_append(moderator: str, username: str, strike_number: int, reason: str
     wb.save(SPREADSHEET_PATH)
 
 
-# ── Primary API functions (Google Sheets first, local fallback) ───────────────
+# ── Primary API functions (Google Sheets + local, both attempted) ─────────────
 
 def _append_strike_row(moderator: str, username: str, strike_number: int, reason: str):
     """Write a strike row to both Google Sheets and local xlsx. Alerts if either fails."""
@@ -180,8 +180,8 @@ def _append_strike_row(moderator: str, username: str, strike_number: int, reason
     try:
         ws = _get_gsheet()
         ws.append_row(row_data, value_input_option="USER_ENTERED")
-        all_vals    = ws.col_values(1)
-        new_row     = len(all_vals)
+        all_vals     = ws.col_values(1)
+        new_row      = len(all_vals)
         strike_color = (
             {"red": 0.75, "green": 0.0, "blue": 0.0}
             if strike_number == 2
@@ -203,7 +203,6 @@ def _append_strike_row(moderator: str, username: str, strike_number: int, reason
         print(f"[Sheets] Local xlsx write failed: {e}")
         failures.append({"target": "Local xlsx", "error": str(e)})
 
-    # ── Alert only if something failed ────────────────────────────────────────
     if failures:
         asyncio.run_coroutine_threadsafe(
             _alert_sheets_fallback("Write strike row", failures), bot.loop)
@@ -241,11 +240,9 @@ def _get_strikes_for_user(target: discord.Member) -> dict:
             "strike2": strike2_rows if strike2_rows else None,
         }
 
-    # Try Google Sheets first; fall back to local silently for reads
-    # (reads don't modify data so no alert needed — the write alert covers sync issues)
     try:
         ws   = _get_gsheet()
-        rows = ws.get_all_values()[1:]   # skip header row
+        rows = ws.get_all_values()[1:]
         print(f"[Sheets] Read {len(rows)} rows from Google Sheet")
         return _parse_rows(rows)
     except Exception as e:
@@ -257,18 +254,14 @@ def _get_strikes_for_user(target: discord.Member) -> dict:
 
 
 def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
-    """
-    Remove a strike from Google Sheets (or local fallback).
-    Logic mirrors the original: delete the row, demote Strike 2 → 1 if needed.
-    """
+    """Remove a strike from both Google Sheets and local xlsx. Alerts if either fails."""
     target_str = str(target).lower()
 
-    # ── Try Google Sheets ─────────────────────────────────────────────────────
+    # ── Google Sheets ─────────────────────────────────────────────────────────
     try:
         ws       = _get_gsheet()
-        all_rows = ws.get_all_values()   # includes header at index 0
-        header   = all_rows[0]
-        data     = all_rows[1:]          # 0-indexed; sheet row = index + 2
+        all_rows = ws.get_all_values()
+        data     = all_rows[1:]
 
         strike1_rows, strike2_rows = [], []
         for i, row in enumerate(data):
@@ -281,7 +274,7 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
             except (ValueError, TypeError):
                 continue
             entry = {
-                "sheet_row": i + 2,      # 1-indexed sheet row number
+                "sheet_row": i + 2,
                 "moderator": row[0] or "Unknown",
                 "date":      row[1] or "Unknown",
                 "reason":    row[4] or "No reason given",
@@ -305,23 +298,18 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
             deleted_row  = target_entry
             ws.delete_rows(target_entry["sheet_row"])
             print(f"[Sheets] Deleted Strike 2 row {target_entry['sheet_row']}")
-
-        else:  # appeal_num == 1
+        else:
             target_entry = strike1_rows[-1]
             deleted_row  = target_entry
             ws.delete_rows(target_entry["sheet_row"])
             print(f"[Sheets] Deleted Strike 1 row {target_entry['sheet_row']}")
-
             if strike2_rows:
-                s2      = strike2_rows[-1]
-                # Row index shifts by -1 after deletion if it was below the deleted row
-                s2_row  = s2["sheet_row"] - (1 if s2["sheet_row"] > target_entry["sheet_row"] else 0)
-                ws.update_cell(s2_row, 4, 1)   # column D = strike number
+                s2     = strike2_rows[-1]
+                s2_row = s2["sheet_row"] - (1 if s2["sheet_row"] > target_entry["sheet_row"] else 0)
+                ws.update_cell(s2_row, 4, 1)
                 ws.format(f"D{s2_row}", {
-                    "textFormat": {
-                        "bold": True,
-                        "foregroundColor": {"red": 1.0, "green": 0.4, "blue": 0.0}  # orange
-                    }
+                    "textFormat": {"bold": True,
+                                   "foregroundColor": {"red": 1.0, "green": 0.4, "blue": 0.0}}
                 })
                 demoted_row = {"moderator": s2["moderator"], "date": s2["date"], "reason": s2["reason"]}
                 print(f"[Sheets] Demoted Strike 2 → Strike 1 at row {s2_row}")
@@ -336,8 +324,8 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
     local_result = {"success": False, "error": "Not attempted"}
     try:
         _init_spreadsheet()
-        wb         = openpyxl.load_workbook(SPREADSHEET_PATH)
-        ws_local   = wb.active
+        wb       = openpyxl.load_workbook(SPREADSHEET_PATH)
+        ws_local = wb.active
         l_strike1, l_strike2 = [], []
 
         for row_idx in range(2, ws_local.max_row + 1):
@@ -369,11 +357,11 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
         else:
             l_deleted = l_demoted = None
             if appeal_num == 2:
-                l_target = l_strike2[-1]
+                l_target  = l_strike2[-1]
                 l_deleted = l_target
                 ws_local.delete_rows(l_target["row"])
             else:
-                l_target = l_strike1[-1]
+                l_target  = l_strike1[-1]
                 l_deleted = l_target
                 ws_local.delete_rows(l_target["row"])
                 if l_strike2:
@@ -398,7 +386,7 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
         print(f"[Sheets] Local xlsx appeal failed: {e}")
         local_result = {"success": False, "error": str(e)}
 
-    # ── Alert if either failed ─────────────────────────────────────────────────
+    # ── Alert if either failed ────────────────────────────────────────────────
     import asyncio
     failures = []
     if not cloud_result["success"]:
@@ -409,14 +397,12 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
         asyncio.run_coroutine_threadsafe(
             _alert_sheets_fallback(f"Appeal Strike {appeal_num}", failures), bot.loop)
 
-    # ── Return result — prefer cloud, fall back to local ──────────────────────
     if cloud_result["success"]:
         return {"success": True, "message": "Appeal processed.",
                 "deleted_row": cloud_result["deleted_row"], "demoted_row": cloud_result["demoted_row"]}
     if local_result["success"]:
         return {"success": True, "message": "Appeal processed.",
                 "deleted_row": local_result["deleted_row"], "demoted_row": local_result["demoted_row"]}
-    # Both failed — return the cloud error as the primary message
     return {"success": False,
             "message": f"{target.mention} — appeal could not be processed on either sheet. Check the alert channel.",
             "deleted_row": None, "demoted_row": None}
@@ -448,7 +434,7 @@ async def strike(interaction: discord.Interaction, username: discord.Member, rea
     strike2_role = guild.get_role(STRIKE_2_ROLE_ID)
 
     if not strike1_role or not strike2_role:
-        await interaction.followup.send("❌ Strike roles not found. Check role IDs in `bot.py`.", ephemeral=True)
+        await interaction.followup.send("❌ Strike roles not found. Check role IDs in `fields.py`.", ephemeral=True)
         return
     if strike2_role in username.roles:
         await interaction.followup.send(f"⚠️ {username.mention} already has **Strike 2**. No action taken.", ephemeral=True)
@@ -476,7 +462,7 @@ async def strike(interaction: discord.Interaction, username: discord.Member, rea
 
     log_channel = guild.get_channel(LOG_CHANNEL_ID)
     if not log_channel:
-        await interaction.followup.send("❌ Log channel not found. Check `LOG_CHANNEL_ID`.", ephemeral=True)
+        await interaction.followup.send("❌ Log channel not found. Check `LOG_CHANNEL_ID` in `fields.py`.", ephemeral=True)
         return
     try:
         await log_channel.send(embed=embed)
@@ -661,11 +647,6 @@ async def strikeappeal_error(interaction: discord.Interaction, error: app_comman
 
 
 # ── /place ────────────────────────────────────────────────────────────────────
-#
-# Discord slash commands support only ONE attachment parameter natively.
-# To accept up to 10 files, we declare file1–file10 as separate optional
-# parameters. Discord presents them as individual upload slots in the UI.
-# Files are NEVER saved to disk — we only read their .url from Discord's CDN.
 
 @tree.command(
     name="place",
@@ -711,6 +692,7 @@ async def place(
             f"❌ This command can only be used in <#{PLACEMENT_CMD_CHANNEL}>.",
             ephemeral=True)
         return
+
     can_view_role  = guild.get_role(CAN_VIEW_ALL_ROLE)
     placement_role = guild.get_role(PLACEMENT_STAFF)
     has_permission = (
@@ -748,16 +730,7 @@ async def place(
             f"Make sure my role is above it in the hierarchy.", ephemeral=True)
         return
 
-    # ── Remove placement queue roles ─────────────────────────────────────────
-    PLACEMENT_QUEUE_ROLE_IDS = [
-        1443794835587858433,  # Squad 60
-        1443794904969908315,  # Squad X
-        1443794792126353554,  # Delta Squad
-        1518749541501894757,  # ---SQUAD---
-        1518754676173045781,  # Shades
-        1453419667434770719,  # Commando
-        1518749744065675284,  # ---Status---
-    ]
+    # ── Remove placement queue roles ──────────────────────────────────────────
     roles_to_remove = [
         guild.get_role(rid)
         for rid in PLACEMENT_QUEUE_ROLE_IDS
@@ -770,9 +743,9 @@ async def place(
                 reason=f"Placement queue cleanup by {invoker}")
             removed_roles = roles_to_remove
         except discord.Forbidden:
-            pass   # Non-fatal — placement still succeeds; log embed will omit removed roles
+            pass
 
-    # ── Collect attachment URLs (never touch the files themselves) ────────────
+    # ── Collect attachment URLs ───────────────────────────────────────────────
     attachments = [a for a in [file1, file2, file3, file4, file5,
                                 file6, file7, file8, file9, file10] if a is not None]
 
@@ -789,14 +762,12 @@ async def place(
         colour=role.colour if role.colour.value != 0 else discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="User",         value=username.mention, inline=True)
-    embed.add_field(name="Role Assigned", value=role.mention,    inline=True)
-    embed.add_field(name="Issued by",    value=invoker.mention,  inline=True)
+    embed.add_field(name="User",          value=username.mention, inline=True)
+    embed.add_field(name="Role Assigned", value=role.mention,     inline=True)
+    embed.add_field(name="Issued by",     value=invoker.mention,  inline=True)
     embed.add_field(
         name=f"Evidence ({len(attachments)} file{'s' if len(attachments) != 1 else ''})",
-        value="\n".join(
-            f"[{a.filename}]({a.url})" for a in attachments
-        ),
+        value="\n".join(f"[{a.filename}]({a.url})" for a in attachments),
         inline=False,
     )
     if removed_roles:
@@ -807,11 +778,9 @@ async def place(
         )
     embed.set_footer(text="Files are hosted on Discord's CDN — not stored locally.")
 
-    # ── If the first file is an image, set it as the embed image ─────────────
     image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
     for a in attachments:
-        ext = os.path.splitext(a.filename)[1].lower()
-        if ext in image_exts:
+        if os.path.splitext(a.filename)[1].lower() in image_exts:
             embed.set_image(url=a.url)
             break
 
@@ -831,170 +800,6 @@ async def place(
 
 @place.error
 async def place_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    try:
-        await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
-    except Exception:
-        pass
-
-
-# ── /dupcategory ──────────────────────────────────────────────────────────────
-
-@tree.command(
-    name="dupcategory",
-    description="Duplicate all channels from an existing category into a new one.",
-    guild=discord.Object(id=GUILD_ID),
-)
-@app_commands.describe(
-    old_category_id    = "The ID of the category to duplicate",
-    new_category_name  = "Name for the new category",
-    new_category_index = "Position (index) of the new category in the channel list (0 = top)",
-)
-async def dupcategory(
-    interaction        : discord.Interaction,
-    old_category_id    : str,
-    new_category_name  : str,
-    new_category_index : str,
-):
-    await interaction.response.defer(ephemeral=True)
-    invoker = interaction.user
-    guild   = interaction.guild
-
-    # ── Validate inputs ───────────────────────────────────────────────────────
-    try:
-        old_category_id = int(old_category_id)
-    except ValueError:
-        await interaction.followup.send(
-            f"❌ `{old_category_id}` is not a valid ID. Paste the raw number, e.g. `1519168841454850089`.",
-            ephemeral=True)
-        return
-
-    try:
-        new_category_index = int(new_category_index)
-    except ValueError:
-        await interaction.followup.send(
-            f"❌ `{new_category_index}` is not a valid position index. Please enter a whole number.",
-            ephemeral=True)
-        return
-
-    # ── Permission check ──────────────────────────────────────────────────────
-    dup_role_1 = guild.get_role(DUP_ROLE_1)
-    dup_role_2 = guild.get_role(DUP_ROLE_2)
-    dup_role_3 = guild.get_role(DUP_ROLE_3)
-    has_permission = any(
-        role and role in invoker.roles
-        for role in (dup_role_1, dup_role_2, dup_role_3)
-    )
-
-    if not has_permission:
-        await interaction.followup.send(
-            "❌ You don't have permission to use `/dupcategory`.", ephemeral=True)
-        return
-
-    # ── Locate the source category ────────────────────────────────────────────
-    source_category = guild.get_channel(old_category_id)
-
-    if source_category is None:
-        await interaction.followup.send(
-            f"❌ No channel found with ID `{old_category_id}`. "
-            f"Make sure you're using the category's ID, not its name.", ephemeral=True)
-        return
-
-    if not isinstance(source_category, discord.CategoryChannel):
-        await interaction.followup.send(
-            f"❌ The channel with ID `{old_category_id}` is not a category.", ephemeral=True)
-        return
-
-    # ── Create the new category ───────────────────────────────────────────────
-    try:
-        new_category = await guild.create_category(
-            name     = new_category_name,
-            position = new_category_index,
-            overwrites = source_category.overwrites,  # copy permission overwrites
-            reason   = f"/dupcategory used by {invoker}",
-        )
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "❌ I don't have permission to create categories.", ephemeral=True)
-        return
-
-    # ── Duplicate each channel in the source category ─────────────────────────
-    # Sort by position so order is preserved in the new category
-    channels       = sorted(source_category.channels, key=lambda c: c.position)
-    created        = []
-    failed         = []
-
-    for ch in channels:
-        try:
-            if isinstance(ch, discord.TextChannel):
-                new_ch = await guild.create_text_channel(
-                    name       = ch.name,
-                    category   = new_category,
-                    position   = ch.position,
-                    topic      = ch.topic,
-                    slowmode_delay = ch.slowmode_delay,
-                    nsfw       = ch.nsfw,
-                    overwrites = ch.overwrites,
-                    reason     = f"/dupcategory — copied from #{ch.name}",
-                )
-            elif isinstance(ch, discord.VoiceChannel):
-                new_ch = await guild.create_voice_channel(
-                    name       = ch.name,
-                    category   = new_category,
-                    position   = ch.position,
-                    bitrate    = ch.bitrate,
-                    user_limit = ch.user_limit,
-                    overwrites = ch.overwrites,
-                    reason     = f"/dupcategory — copied from #{ch.name}",
-                )
-            elif isinstance(ch, discord.StageChannel):
-                new_ch = await guild.create_stage_channel(
-                    name       = ch.name,
-                    category   = new_category,
-                    position   = ch.position,
-                    overwrites = ch.overwrites,
-                    reason     = f"/dupcategory — copied from #{ch.name}",
-                )
-            elif isinstance(ch, discord.ForumChannel):
-                new_ch = await guild.create_forum(
-                    name       = ch.name,
-                    category   = new_category,
-                    position   = ch.position,
-                    topic      = ch.topic,
-                    slowmode_delay = ch.slowmode_delay,
-                    nsfw       = ch.nsfw,
-                    overwrites = ch.overwrites,
-                    reason     = f"/dupcategory — copied from #{ch.name}",
-                )
-            else:
-                # Announcement / News / unknown — fall back to text channel
-                new_ch = await guild.create_text_channel(
-                    name       = ch.name,
-                    category   = new_category,
-                    position   = ch.position,
-                    overwrites = ch.overwrites,
-                    reason     = f"/dupcategory — copied from #{ch.name} (fallback)",
-                )
-            created.append(new_ch)
-
-        except Exception as e:
-            failed.append((ch.name, str(e)))
-
-    # ── Respond ───────────────────────────────────────────────────────────────
-    summary_lines = [
-        f"✅ New category **{new_category.name}** created at position {new_category_index}.",
-        f"**{len(created)}/{len(channels)}** channel(s) duplicated successfully.",
-    ]
-    if failed:
-        summary_lines.append(
-            "⚠️ The following channels could not be duplicated:\n" +
-            "\n".join(f"• `#{name}` — {err}" for name, err in failed)
-        )
-
-    await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
-
-
-@dupcategory.error
-async def dupcategory_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     try:
         await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
     except Exception:
@@ -1029,6 +834,7 @@ async def skipplace(
             f"❌ This command can only be used in <#{PLACEMENT_CMD_CHANNEL}>.",
             ephemeral=True)
         return
+
     can_view_role  = guild.get_role(CAN_VIEW_ALL_ROLE)
     placement_role = guild.get_role(PLACEMENT_STAFF)
     has_permission = (
@@ -1066,16 +872,7 @@ async def skipplace(
             f"Make sure my role is above it in the hierarchy.", ephemeral=True)
         return
 
-    # ── Remove placement queue roles ─────────────────────────────────────────
-    PLACEMENT_QUEUE_ROLE_IDS = [
-        1443794835587858433,  # Squad 60
-        1443794904969908315,  # Squad X
-        1443794792126353554,  # Delta Squad
-        1518749541501894757,  # ---SQUAD---
-        1518754676173045781,  # Shades
-        1453419667434770719,  # Commando
-        1518749744065675284,  # ---Status---
-    ]
+    # ── Remove placement queue roles ──────────────────────────────────────────
     roles_to_remove = [
         guild.get_role(rid)
         for rid in PLACEMENT_QUEUE_ROLE_IDS
@@ -1088,7 +885,7 @@ async def skipplace(
                 reason=f"Placement queue cleanup by {invoker}")
             removed_roles = roles_to_remove
         except discord.Forbidden:
-            pass   # Non-fatal — placement still succeeds; log embed will omit removed roles
+            pass
 
     # ── Post to place channel ─────────────────────────────────────────────────
     place_channel = guild.get_channel(PLACE_CHANNEL_ID)
@@ -1112,11 +909,7 @@ async def skipplace(
               "Placement was skipped and their role was restored directly.",
         inline=False,
     )
-    embed.add_field(
-        name="Evidence",
-        value=f"[{file1.filename}]({file1.url})",
-        inline=False,
-    )
+    embed.add_field(name="Evidence", value=f"[{file1.filename}]({file1.url})", inline=False)
     if removed_roles:
         embed.add_field(
             name="🗑️ Queue Roles Removed",
@@ -1124,7 +917,6 @@ async def skipplace(
             inline=False,
         )
 
-    # Embed image preview if the file is an image
     image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
     if os.path.splitext(file1.filename)[1].lower() in image_exts:
         embed.set_image(url=file1.url)
@@ -1161,9 +953,9 @@ async def skipplace_error(interaction: discord.Interaction, error: app_commands.
 )
 async def updatestrikes(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    invoker       = interaction.user
-    guild         = interaction.guild
-    can_view_role = guild.get_role(CAN_VIEW_ALL_ROLE)
+    invoker        = interaction.user
+    guild          = interaction.guild
+    can_view_role  = guild.get_role(CAN_VIEW_ALL_ROLE)
     has_permission = can_view_role in invoker.roles if can_view_role else False
 
     if not has_permission:
@@ -1171,19 +963,18 @@ async def updatestrikes(interaction: discord.Interaction):
             "❌ You don't have permission to use `/updatestrikes`.", ephemeral=True)
         return
 
-    # ── Check local file exists and has data ──────────────────────────────────
     if not os.path.exists(SPREADSHEET_PATH):
         await interaction.followup.send(
             "ℹ️ No local backup file found — nothing to sync.", ephemeral=True)
         return
 
     _init_spreadsheet()
-    wb       = openpyxl.load_workbook(SPREADSHEET_PATH, data_only=True)
-    ws_local = wb.active
+    wb         = openpyxl.load_workbook(SPREADSHEET_PATH, data_only=True)
+    ws_local   = wb.active
     local_rows = []
     for row in ws_local.iter_rows(min_row=2, values_only=True):
         if row[0] is None and row[2] is None:
-            continue   # skip completely empty rows
+            continue
         local_rows.append(list(row))
 
     if not local_rows:
@@ -1191,7 +982,6 @@ async def updatestrikes(interaction: discord.Interaction):
             "ℹ️ Local backup is empty — nothing to sync.", ephemeral=True)
         return
 
-    # ── Connect to Google Sheets ──────────────────────────────────────────────
     try:
         ws_cloud = _get_gsheet()
     except Exception as e:
@@ -1200,28 +990,16 @@ async def updatestrikes(interaction: discord.Interaction):
             ephemeral=True)
         return
 
-    # ── Wipe cloud sheet (data rows only) and rewrite from local ─────────────
     try:
-        cloud_rows = ws_cloud.get_all_values()
+        cloud_rows     = ws_cloud.get_all_values()
         last_cloud_row = len(cloud_rows)
-
-        # Clear everything after the header row
         if last_cloud_row > 1:
             ws_cloud.delete_rows(2, last_cloud_row - 1)
 
-        if not local_rows:
-            await interaction.followup.send(
-                "ℹ️ Local backup is empty after filtering — nothing was written.",
-                ephemeral=True)
-            return
-
-        # Write all local rows in one batch call
         ws_cloud.append_rows(local_rows, value_input_option="USER_ENTERED")
 
-        # Re-apply strike number formatting
-        all_vals = ws_cloud.col_values(1)
         for i, row in enumerate(local_rows):
-            sheet_row = i + 2   # +1 for header, +1 for 1-indexing
+            sheet_row = i + 2
             try:
                 strike_num = int(row[3])
             except (ValueError, TypeError):
@@ -1240,7 +1018,6 @@ async def updatestrikes(interaction: discord.Interaction):
             f"❌ Sync failed while writing to Google Sheets: `{e}`", ephemeral=True)
         return
 
-    # ── Post success to alert channel ─────────────────────────────────────────
     alert_channel = guild.get_channel(SHEETS_ALERT_CHANNEL)
     embed = discord.Embed(
         title="✅ Google Sheets Synced from Local Backup",
@@ -1270,6 +1047,131 @@ async def updatestrikes_error(interaction: discord.Interaction, error: app_comma
         pass
 
 
+# ── /dupcategory ──────────────────────────────────────────────────────────────
+
+@tree.command(
+    name="dupcategory",
+    description="Duplicate all channels from an existing category into a new one.",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    old_category_id    = "The ID of the category to duplicate",
+    new_category_name  = "Name for the new category",
+    new_category_index = "Position (index) of the new category in the channel list (0 = top)",
+)
+async def dupcategory(
+    interaction        : discord.Interaction,
+    old_category_id    : str,
+    new_category_name  : str,
+    new_category_index : str,
+):
+    await interaction.response.defer(ephemeral=True)
+    invoker = interaction.user
+    guild   = interaction.guild
+
+    try:
+        old_category_id = int(old_category_id)
+    except ValueError:
+        await interaction.followup.send(
+            f"❌ `{old_category_id}` is not a valid ID. Paste the raw number, e.g. `1519168841454850089`.",
+            ephemeral=True)
+        return
+
+    try:
+        new_category_index = int(new_category_index)
+    except ValueError:
+        await interaction.followup.send(
+            f"❌ `{new_category_index}` is not a valid position index. Please enter a whole number.",
+            ephemeral=True)
+        return
+
+    dup_role_1 = guild.get_role(DUP_ROLE_1)
+    dup_role_2 = guild.get_role(DUP_ROLE_2)
+    dup_role_3 = guild.get_role(DUP_ROLE_3)
+    has_permission = any(
+        role and role in invoker.roles
+        for role in (dup_role_1, dup_role_2, dup_role_3)
+    )
+    if not has_permission:
+        await interaction.followup.send(
+            "❌ You don't have permission to use `/dupcategory`.", ephemeral=True)
+        return
+
+    source_category = guild.get_channel(old_category_id)
+    if source_category is None:
+        await interaction.followup.send(
+            f"❌ No channel found with ID `{old_category_id}`. "
+            f"Make sure you're using the category's ID, not its name.", ephemeral=True)
+        return
+    if not isinstance(source_category, discord.CategoryChannel):
+        await interaction.followup.send(
+            f"❌ The channel with ID `{old_category_id}` is not a category.", ephemeral=True)
+        return
+
+    try:
+        new_category = await guild.create_category(
+            name       = new_category_name,
+            position   = new_category_index,
+            overwrites = source_category.overwrites,
+            reason     = f"/dupcategory used by {invoker}",
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ I don't have permission to create categories.", ephemeral=True)
+        return
+
+    channels = sorted(source_category.channels, key=lambda c: c.position)
+    created, failed = [], []
+
+    for ch in channels:
+        try:
+            if isinstance(ch, discord.TextChannel):
+                new_ch = await guild.create_text_channel(
+                    name=ch.name, category=new_category, position=ch.position,
+                    topic=ch.topic, slowmode_delay=ch.slowmode_delay, nsfw=ch.nsfw,
+                    overwrites=ch.overwrites, reason=f"/dupcategory — copied from #{ch.name}")
+            elif isinstance(ch, discord.VoiceChannel):
+                new_ch = await guild.create_voice_channel(
+                    name=ch.name, category=new_category, position=ch.position,
+                    bitrate=ch.bitrate, user_limit=ch.user_limit,
+                    overwrites=ch.overwrites, reason=f"/dupcategory — copied from #{ch.name}")
+            elif isinstance(ch, discord.StageChannel):
+                new_ch = await guild.create_stage_channel(
+                    name=ch.name, category=new_category, position=ch.position,
+                    overwrites=ch.overwrites, reason=f"/dupcategory — copied from #{ch.name}")
+            elif isinstance(ch, discord.ForumChannel):
+                new_ch = await guild.create_forum(
+                    name=ch.name, category=new_category, position=ch.position,
+                    topic=ch.topic, slowmode_delay=ch.slowmode_delay, nsfw=ch.nsfw,
+                    overwrites=ch.overwrites, reason=f"/dupcategory — copied from #{ch.name}")
+            else:
+                new_ch = await guild.create_text_channel(
+                    name=ch.name, category=new_category, position=ch.position,
+                    overwrites=ch.overwrites, reason=f"/dupcategory — copied from #{ch.name} (fallback)")
+            created.append(new_ch)
+        except Exception as e:
+            failed.append((ch.name, str(e)))
+
+    summary_lines = [
+        f"✅ New category **{new_category.name}** created at position {new_category_index}.",
+        f"**{len(created)}/{len(channels)}** channel(s) duplicated successfully.",
+    ]
+    if failed:
+        summary_lines.append(
+            "⚠️ The following channels could not be duplicated:\n" +
+            "\n".join(f"• `#{name}` — {err}" for name, err in failed)
+        )
+    await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
+
+
+@dupcategory.error
+async def dupcategory_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
+    except Exception:
+        pass
+
+
 # ── /duprole ──────────────────────────────────────────────────────────────────
 
 @tree.command(
@@ -1278,10 +1180,10 @@ async def updatestrikes_error(interaction: discord.Interaction, error: app_comma
     guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
-    old_role_id  = "ID of the role to copy permissions from",
-    name         = "Name for the new role",
-    color_code   = "Hex colour code for the new role (e.g. #FF5733 or FF5733)",
-    position     = "Position of the new role in the hierarchy (1 = bottom, higher = further up)",
+    old_role_id = "ID of the role to copy permissions from",
+    name        = "Name for the new role",
+    color_code  = "Hex colour code for the new role (e.g. #FF5733 or FF5733)",
+    position    = "Position of the new role in the hierarchy (1 = bottom, higher = further up)",
 )
 async def duprole(
     interaction : discord.Interaction,
@@ -1294,7 +1196,6 @@ async def duprole(
     invoker = interaction.user
     guild   = interaction.guild
 
-    # ── Permission check ──────────────────────────────────────────────────────
     dup_role_1 = guild.get_role(DUP_ROLE_1)
     dup_role_2 = guild.get_role(DUP_ROLE_2)
     dup_role_3 = guild.get_role(DUP_ROLE_3)
@@ -1307,13 +1208,11 @@ async def duprole(
             "❌ You don't have permission to use `/duprole`.", ephemeral=True)
         return
 
-    # ── Validate old_role_id ──────────────────────────────────────────────────
     try:
         old_role_id_int = int(old_role_id)
     except ValueError:
         await interaction.followup.send(
-            f"❌ `{old_role_id}` is not a valid role ID. Paste the raw number.",
-            ephemeral=True)
+            f"❌ `{old_role_id}` is not a valid role ID. Paste the raw number.", ephemeral=True)
         return
 
     source_role = guild.get_role(old_role_id_int)
@@ -1322,18 +1221,15 @@ async def duprole(
             f"❌ No role found with ID `{old_role_id_int}`.", ephemeral=True)
         return
 
-    # ── Validate position ─────────────────────────────────────────────────────
     try:
         position_int = int(position)
         if position_int < 1:
             raise ValueError
     except ValueError:
         await interaction.followup.send(
-            f"❌ `{position}` is not a valid position. Enter a whole number ≥ 1.",
-            ephemeral=True)
+            f"❌ `{position}` is not a valid position. Enter a whole number ≥ 1.", ephemeral=True)
         return
 
-    # ── Validate and parse colour ─────────────────────────────────────────────
     hex_str = color_code.lstrip("#").strip()
     if len(hex_str) != 6:
         await interaction.followup.send(
@@ -1341,22 +1237,17 @@ async def duprole(
             ephemeral=True)
         return
     try:
-        colour_int = int(hex_str, 16)
-        new_colour = discord.Color(colour_int)
+        new_colour = discord.Color(int(hex_str, 16))
     except ValueError:
         await interaction.followup.send(
             f"❌ `{color_code}` contains invalid hex characters.", ephemeral=True)
         return
 
-    # ── Create the new role with the source role's permissions ────────────────
     try:
         new_role = await guild.create_role(
-            name        = name,
-            permissions = source_role.permissions,
-            colour      = new_colour,
-            hoist       = source_role.hoist,
-            mentionable = source_role.mentionable,
-            reason      = f"/duprole: copied from {source_role.name} by {invoker}",
+            name=name, permissions=source_role.permissions, colour=new_colour,
+            hoist=source_role.hoist, mentionable=source_role.mentionable,
+            reason=f"/duprole: copied from {source_role.name} by {invoker}",
         )
     except discord.Forbidden:
         await interaction.followup.send(
@@ -1364,51 +1255,36 @@ async def duprole(
             ephemeral=True)
         return
     except Exception as e:
-        await interaction.followup.send(
-            f"❌ Failed to create role: `{e}`", ephemeral=True)
+        await interaction.followup.send(f"❌ Failed to create role: `{e}`", ephemeral=True)
         return
 
-    # ── Move the role to the requested position ───────────────────────────────
     try:
-        await new_role.edit(position=position_int,
-                            reason=f"/duprole: set position to {position_int}")
+        await new_role.edit(position=position_int, reason=f"/duprole: set position to {position_int}")
     except discord.Forbidden:
         await interaction.followup.send(
             f"✅ Role {new_role.mention} created with copied permissions, but I couldn't set its "
-            f"position (missing permission or position is above my highest role). "
-            f"You can drag it manually in Server Settings → Roles.",
-            ephemeral=True)
+            f"position. You can drag it manually in Server Settings → Roles.", ephemeral=True)
         return
     except Exception as e:
         await interaction.followup.send(
-            f"✅ Role {new_role.mention} created, but position could not be set: `{e}`",
-            ephemeral=True)
+            f"✅ Role {new_role.mention} created, but position could not be set: `{e}`", ephemeral=True)
         return
 
-    # ── Build permission summary for confirmation ─────────────────────────────
-    perm_names = [
-        perm.replace("_", " ").title()
-        for perm, value in source_role.permissions
-        if value
-    ]
+    perm_names   = [p.replace("_", " ").title() for p, v in source_role.permissions if v]
     perm_summary = ", ".join(perm_names) if perm_names else "No permissions"
     if len(perm_summary) > 1000:
         perm_summary = perm_summary[:997] + "..."
 
-    embed = discord.Embed(
-        title="✅ Role Duplicated",
-        colour=new_colour,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="New Role",       value=new_role.mention,     inline=True)
-    embed.add_field(name="Copied From",    value=source_role.mention,  inline=True)
-    embed.add_field(name="Position",       value=str(position_int),    inline=True)
-    embed.add_field(name="Colour",         value=f"`#{hex_str.upper()}`", inline=True)
-    embed.add_field(name="Hoisted",        value="Yes" if source_role.hoist else "No", inline=True)
-    embed.add_field(name="Mentionable",    value="Yes" if source_role.mentionable else "No", inline=True)
-    embed.add_field(name="Permissions Copied", value=perm_summary,     inline=False)
+    embed = discord.Embed(title="✅ Role Duplicated", colour=new_colour,
+                          timestamp=datetime.now(timezone.utc))
+    embed.add_field(name="New Role",           value=new_role.mention,                        inline=True)
+    embed.add_field(name="Copied From",        value=source_role.mention,                     inline=True)
+    embed.add_field(name="Position",           value=str(position_int),                       inline=True)
+    embed.add_field(name="Colour",             value=f"`#{hex_str.upper()}`",                 inline=True)
+    embed.add_field(name="Hoisted",            value="Yes" if source_role.hoist else "No",    inline=True)
+    embed.add_field(name="Mentionable",        value="Yes" if source_role.mentionable else "No", inline=True)
+    embed.add_field(name="Permissions Copied", value=perm_summary,                            inline=False)
     embed.set_footer(text=f"Created by {invoker}")
-
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -1428,7 +1304,7 @@ async def duprole_error(interaction: discord.Interaction, error: app_commands.Ap
     guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
-    channel_id    = "ID of the channel to modify",
+    channel_id     = "ID of the channel to modify",
     source_role_id = "ID of the role whose permissions will be moved (and removed)",
     target_role_id = "ID of the role that will receive those permissions",
 )
@@ -1442,7 +1318,6 @@ async def cutchannelperms(
     invoker = interaction.user
     guild   = interaction.guild
 
-    # ── Permission check (DUP_ROLEs) ─────────────────────────────────────────
     dup_role_1 = guild.get_role(DUP_ROLE_1)
     dup_role_2 = guild.get_role(DUP_ROLE_2)
     dup_role_3 = guild.get_role(DUP_ROLE_3)
@@ -1455,140 +1330,91 @@ async def cutchannelperms(
             "❌ You don't have permission to use `/cutchannelperms`.", ephemeral=True)
         return
 
-    # ── Validate IDs ──────────────────────────────────────────────────────────
     try:
         channel_id_int = int(channel_id)
     except ValueError:
-        await interaction.followup.send(
-            f"❌ `{channel_id}` is not a valid channel ID.", ephemeral=True)
+        await interaction.followup.send(f"❌ `{channel_id}` is not a valid channel ID.", ephemeral=True)
         return
-
     try:
         source_role_id_int = int(source_role_id)
     except ValueError:
-        await interaction.followup.send(
-            f"❌ `{source_role_id}` is not a valid role ID.", ephemeral=True)
+        await interaction.followup.send(f"❌ `{source_role_id}` is not a valid role ID.", ephemeral=True)
         return
-
     try:
         target_role_id_int = int(target_role_id)
     except ValueError:
-        await interaction.followup.send(
-            f"❌ `{target_role_id}` is not a valid role ID.", ephemeral=True)
+        await interaction.followup.send(f"❌ `{target_role_id}` is not a valid role ID.", ephemeral=True)
         return
 
     if source_role_id_int == target_role_id_int:
-        await interaction.followup.send(
-            "❌ Source and target roles must be different.", ephemeral=True)
+        await interaction.followup.send("❌ Source and target roles must be different.", ephemeral=True)
         return
 
-    # ── Resolve objects ───────────────────────────────────────────────────────
     channel = guild.get_channel(channel_id_int)
     if channel is None:
-        await interaction.followup.send(
-            f"❌ No channel found with ID `{channel_id_int}`.", ephemeral=True)
+        await interaction.followup.send(f"❌ No channel found with ID `{channel_id_int}`.", ephemeral=True)
         return
-
     source_role = guild.get_role(source_role_id_int)
     if source_role is None:
-        await interaction.followup.send(
-            f"❌ No role found with ID `{source_role_id_int}`.", ephemeral=True)
+        await interaction.followup.send(f"❌ No role found with ID `{source_role_id_int}`.", ephemeral=True)
         return
-
     target_role = guild.get_role(target_role_id_int)
     if target_role is None:
-        await interaction.followup.send(
-            f"❌ No role found with ID `{target_role_id_int}`.", ephemeral=True)
+        await interaction.followup.send(f"❌ No role found with ID `{target_role_id_int}`.", ephemeral=True)
         return
 
-    # ── Read source overwrite ─────────────────────────────────────────────────
     source_overwrite = channel.overwrites_for(source_role)
-
     if source_overwrite.is_empty():
         await interaction.followup.send(
-            f"⚠️ {source_role.mention} has no permission overwrite in {channel.mention}. "
-            f"Nothing to move.", ephemeral=True)
+            f"⚠️ {source_role.mention} has no permission overwrite in {channel.mention}. Nothing to move.",
+            ephemeral=True)
         return
 
-    # Build a human-readable summary before we touch anything
-    allow_perms = [
-        perm.replace("_", " ").title()
-        for perm, value in source_overwrite
-        if value is True
-    ]
-    deny_perms = [
-        perm.replace("_", " ").title()
-        for perm, value in source_overwrite
-        if value is False
-    ]
+    allow_perms = [p.replace("_", " ").title() for p, v in source_overwrite if v is True]
+    deny_perms  = [p.replace("_", " ").title() for p, v in source_overwrite if v is False]
 
-    # ── Apply overwrite to target role ────────────────────────────────────────
     try:
         await channel.set_permissions(
-            target_role,
-            overwrite=source_overwrite,
-            reason=f"/cutchannelperms: moved from {source_role.name} by {invoker}",
-        )
+            target_role, overwrite=source_overwrite,
+            reason=f"/cutchannelperms: moved from {source_role.name} by {invoker}")
     except discord.Forbidden:
         await interaction.followup.send(
             f"❌ I don't have permission to edit overwrites in {channel.mention}. "
-            f"Make sure I have **Manage Channels** and my role is above both roles.",
-            ephemeral=True)
+            f"Make sure I have **Manage Channels** and my role is above both roles.", ephemeral=True)
         return
     except Exception as e:
         await interaction.followup.send(
-            f"❌ Failed to apply permissions to {target_role.mention}: `{e}`",
-            ephemeral=True)
+            f"❌ Failed to apply permissions to {target_role.mention}: `{e}`", ephemeral=True)
         return
 
-    # ── Remove source role overwrite ──────────────────────────────────────────
     try:
         await channel.set_permissions(
-            source_role,
-            overwrite=None,
-            reason=f"/cutchannelperms: removed after move to {target_role.name} by {invoker}",
-        )
+            source_role, overwrite=None,
+            reason=f"/cutchannelperms: removed after move to {target_role.name} by {invoker}")
     except discord.Forbidden:
         await interaction.followup.send(
             f"✅ Permissions copied to {target_role.mention}, but I couldn't remove "
-            f"{source_role.mention}'s overwrite from {channel.mention} (missing Manage Channels). "
-            f"Please remove it manually.",
-            ephemeral=True)
+            f"{source_role.mention}'s overwrite. Please remove it manually.", ephemeral=True)
         return
     except Exception as e:
         await interaction.followup.send(
             f"✅ Permissions copied to {target_role.mention}, but failed to remove "
-            f"{source_role.mention}'s overwrite: `{e}`",
-            ephemeral=True)
+            f"{source_role.mention}'s overwrite: `{e}`", ephemeral=True)
         return
 
-    # ── Confirmation embed ────────────────────────────────────────────────────
-    embed = discord.Embed(
-        title="✅ Channel Permissions Moved",
-        colour=discord.Color.blurple(),
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Channel",      value=channel.mention,     inline=True)
-    embed.add_field(name="Moved From",   value=source_role.mention, inline=True)
-    embed.add_field(name="Moved To",     value=target_role.mention, inline=True)
-
+    embed = discord.Embed(title="✅ Channel Permissions Moved", colour=discord.Color.blurple(),
+                          timestamp=datetime.now(timezone.utc))
+    embed.add_field(name="Channel",    value=channel.mention,     inline=True)
+    embed.add_field(name="Moved From", value=source_role.mention, inline=True)
+    embed.add_field(name="Moved To",   value=target_role.mention, inline=True)
     if allow_perms:
-        embed.add_field(
-            name="✅ Allowed",
-            value=", ".join(allow_perms) if len(", ".join(allow_perms)) <= 1024
-                  else ", ".join(allow_perms)[:1021] + "...",
-            inline=False,
-        )
+        v = ", ".join(allow_perms)
+        embed.add_field(name="✅ Allowed", value=v[:1021] + "..." if len(v) > 1024 else v, inline=False)
     if deny_perms:
-        embed.add_field(
-            name="❌ Denied",
-            value=", ".join(deny_perms) if len(", ".join(deny_perms)) <= 1024
-                  else ", ".join(deny_perms)[:1021] + "...",
-            inline=False,
-        )
+        v = ", ".join(deny_perms)
+        embed.add_field(name="❌ Denied", value=v[:1021] + "..." if len(v) > 1024 else v, inline=False)
     if not allow_perms and not deny_perms:
         embed.add_field(name="Permissions", value="Neutral (all unset)", inline=False)
-
     embed.set_footer(text=f"Run by {invoker}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1609,16 +1435,8 @@ async def cutchannelperms_error(interaction: discord.Interaction, error: app_com
     guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
-    role1  = "Role 1",
-    role2  = "Role 2",
-    role3  = "Role 3",
-    role4  = "Role 4",
-    role5  = "Role 5",
-    role6  = "Role 6",
-    role7  = "Role 7",
-    role8  = "Role 8",
-    role9  = "Role 9",
-    role10 = "Role 10",
+    role1="Role 1", role2="Role 2", role3="Role 3", role4="Role 4", role5="Role 5",
+    role6="Role 6", role7="Role 7", role8="Role 8", role9="Role 9", role10="Role 10",
 )
 async def roleids(
     interaction : discord.Interaction,
@@ -1634,25 +1452,13 @@ async def roleids(
     role10      : discord.Role = None,
 ):
     await interaction.response.defer(ephemeral=True)
-
     roles = [r for r in [role1, role2, role3, role4, role5,
                           role6, role7, role8, role9, role10] if r is not None]
-
-    embed = discord.Embed(
-        title="🔖 Role IDs",
-        colour=discord.Color.blurple(),
-        timestamp=datetime.now(timezone.utc),
-    )
-
-    lines = []
-    for role in roles:
-        # Colour swatch — use the role colour if it has one, otherwise grey
-        colour_hex = f"#{role.colour.value:06X}" if role.colour.value != 0 else "#99AAB5"
-        lines.append(f"{role.mention}` {role.id }`")
-
+    lines = [f"{r.mention}` {r.id}`" for r in roles]
+    embed = discord.Embed(title="🔖 Role IDs", colour=discord.Color.blurple(),
+                          timestamp=datetime.now(timezone.utc))
     embed.description = "\n".join(lines)
     embed.set_footer(text=f"Requested by {interaction.user} · {len(roles)} role{'s' if len(roles) != 1 else ''}")
-
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -1672,16 +1478,9 @@ async def roleids_error(interaction: discord.Interaction, error: app_commands.Ap
     guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
-    channel1  = "Channel 1",
-    channel2  = "Channel 2",
-    channel3  = "Channel 3",
-    channel4  = "Channel 4",
-    channel5  = "Channel 5",
-    channel6  = "Channel 6",
-    channel7  = "Channel 7",
-    channel8  = "Channel 8",
-    channel9  = "Channel 9",
-    channel10 = "Channel 10",
+    channel1="Channel 1", channel2="Channel 2", channel3="Channel 3",
+    channel4="Channel 4", channel5="Channel 5", channel6="Channel 6",
+    channel7="Channel 7", channel8="Channel 8", channel9="Channel 9", channel10="Channel 10",
 )
 async def channelids(
     interaction : discord.Interaction,
@@ -1697,37 +1496,22 @@ async def channelids(
     channel10   : discord.abc.GuildChannel = None,
 ):
     await interaction.response.defer(ephemeral=True)
-
     channels = [c for c in [channel1, channel2, channel3, channel4, channel5,
                               channel6, channel7, channel8, channel9, channel10] if c is not None]
 
-    # Channel type icon mapping
     def channel_icon(ch):
-        if isinstance(ch, discord.VoiceChannel):
-            return "🔊"
-        if isinstance(ch, discord.StageChannel):
-            return "🎙️"
-        if isinstance(ch, discord.ForumChannel):
-            return "🗂️"
-        if isinstance(ch, discord.CategoryChannel):
-            return "📁"
-        if getattr(ch, "news", False):
-            return "📢"
+        if isinstance(ch, discord.VoiceChannel):   return "🔊"
+        if isinstance(ch, discord.StageChannel):   return "🎙️"
+        if isinstance(ch, discord.ForumChannel):   return "🗂️"
+        if isinstance(ch, discord.CategoryChannel): return "📁"
+        if getattr(ch, "news", False):              return "📢"
         return "💬"
 
-    lines = []
-    for ch in channels:
-        icon = channel_icon(ch)
-        lines.append(f"{icon} {ch.mention}` {ch.id }`")
-
-    embed = discord.Embed(
-        title="📋 Channel IDs",
-        colour=discord.Color.blurple(),
-        timestamp=datetime.now(timezone.utc),
-    )
+    lines = [f"{channel_icon(ch)} {ch.mention}` {ch.id}`" for ch in channels]
+    embed = discord.Embed(title="📋 Channel IDs", colour=discord.Color.blurple(),
+                          timestamp=datetime.now(timezone.utc))
     embed.description = "\n".join(lines)
     embed.set_footer(text=f"Requested by {interaction.user} · {len(channels)} channel{'s' if len(channels) != 1 else ''}")
-
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
