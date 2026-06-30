@@ -1523,6 +1523,142 @@ async def channelids_error(interaction: discord.Interaction, error: app_commands
         pass
 
 
+# ── /cutcategoryperms ─────────────────────────────────────────────────────────
+
+@tree.command(
+    name="cutcategoryperms",
+    description="Move a role's permission overwrite from one role to another in a category, then remove the first.",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    category_id    = "ID of the category to modify",
+    source_role_id = "ID of the role whose permissions will be moved (and removed)",
+    target_role_id = "ID of the role that will receive those permissions",
+)
+async def cutcategoryperms(
+    interaction    : discord.Interaction,
+    category_id    : str,
+    source_role_id : str,
+    target_role_id : str,
+):
+    await interaction.response.defer(ephemeral=True)
+    invoker = interaction.user
+    guild   = interaction.guild
+
+    dup_role_1 = guild.get_role(DUP_ROLE_1)
+    dup_role_2 = guild.get_role(DUP_ROLE_2)
+    dup_role_3 = guild.get_role(DUP_ROLE_3)
+    has_permission = any(
+        role and role in invoker.roles
+        for role in (dup_role_1, dup_role_2, dup_role_3)
+    )
+    if not has_permission:
+        await interaction.followup.send(
+            "❌ You don't have permission to use `/cutcategoryperms`.", ephemeral=True)
+        return
+
+    try:
+        category_id_int = int(category_id)
+    except ValueError:
+        await interaction.followup.send(f"❌ `{category_id}` is not a valid category ID.", ephemeral=True)
+        return
+    try:
+        source_role_id_int = int(source_role_id)
+    except ValueError:
+        await interaction.followup.send(f"❌ `{source_role_id}` is not a valid role ID.", ephemeral=True)
+        return
+    try:
+        target_role_id_int = int(target_role_id)
+    except ValueError:
+        await interaction.followup.send(f"❌ `{target_role_id}` is not a valid role ID.", ephemeral=True)
+        return
+
+    if source_role_id_int == target_role_id_int:
+        await interaction.followup.send("❌ Source and target roles must be different.", ephemeral=True)
+        return
+
+    category = guild.get_channel(category_id_int)
+    if category is None:
+        await interaction.followup.send(f"❌ No channel found with ID `{category_id_int}`.", ephemeral=True)
+        return
+    if not isinstance(category, discord.CategoryChannel):
+        await interaction.followup.send(
+            f"❌ The channel with ID `{category_id_int}` is not a category.", ephemeral=True)
+        return
+
+    source_role = guild.get_role(source_role_id_int)
+    if source_role is None:
+        await interaction.followup.send(f"❌ No role found with ID `{source_role_id_int}`.", ephemeral=True)
+        return
+    target_role = guild.get_role(target_role_id_int)
+    if target_role is None:
+        await interaction.followup.send(f"❌ No role found with ID `{target_role_id_int}`.", ephemeral=True)
+        return
+
+    source_overwrite = category.overwrites_for(source_role)
+    if source_overwrite.is_empty():
+        await interaction.followup.send(
+            f"⚠️ {source_role.mention} has no permission overwrite in {category.mention}. Nothing to move.",
+            ephemeral=True)
+        return
+
+    allow_perms = [p.replace("_", " ").title() for p, v in source_overwrite if v is True]
+    deny_perms  = [p.replace("_", " ").title() for p, v in source_overwrite if v is False]
+
+    try:
+        await category.set_permissions(
+            target_role, overwrite=source_overwrite,
+            reason=f"/cutcategoryperms: moved from {source_role.name} by {invoker}")
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"❌ I don't have permission to edit overwrites in {category.mention}. "
+            f"Make sure I have **Manage Channels** and my role is above both roles.", ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Failed to apply permissions to {target_role.mention}: `{e}`", ephemeral=True)
+        return
+
+    try:
+        await category.set_permissions(
+            source_role, overwrite=None,
+            reason=f"/cutcategoryperms: removed after move to {target_role.name} by {invoker}")
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"✅ Permissions copied to {target_role.mention}, but I couldn't remove "
+            f"{source_role.mention}'s overwrite. Please remove it manually.", ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(
+            f"✅ Permissions copied to {target_role.mention}, but failed to remove "
+            f"{source_role.mention}'s overwrite: `{e}`", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="✅ Category Permissions Moved", colour=discord.Color.blurple(),
+                          timestamp=datetime.now(timezone.utc))
+    embed.add_field(name="Category",   value=category.mention,    inline=True)
+    embed.add_field(name="Moved From", value=source_role.mention, inline=True)
+    embed.add_field(name="Moved To",   value=target_role.mention, inline=True)
+    if allow_perms:
+        v = ", ".join(allow_perms)
+        embed.add_field(name="✅ Allowed", value=v[:1021] + "..." if len(v) > 1024 else v, inline=False)
+    if deny_perms:
+        v = ", ".join(deny_perms)
+        embed.add_field(name="❌ Denied", value=v[:1021] + "..." if len(v) > 1024 else v, inline=False)
+    if not allow_perms and not deny_perms:
+        embed.add_field(name="Permissions", value="Neutral (all unset)", inline=False)
+    embed.set_footer(text=f"Run by {invoker}")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@cutcategoryperms.error
+async def cutcategoryperms_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
+    except Exception:
+        pass
+
+
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
