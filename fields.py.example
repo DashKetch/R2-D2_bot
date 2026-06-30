@@ -1,0 +1,39 @@
+"""Example configuration for R2‑D2 Bot.
+
+Copy this file to `fields.py` and fill in real values. Do NOT commit
+your real `fields.py` or `credentials.json` to a public repository.
+"""
+
+# Discord / Bot
+BOT_TOKEN = ""  # Your bot token (keep secret)
+GUILD_ID = 0
+
+# Channels
+LOG_CHANNEL_ID = 0
+PLACE_CHANNEL_ID = 0
+PLACEMENT_CMD_CHANNEL = 0
+SHEETS_ALERT_CHANNEL = 0
+
+# Roles
+STRIKE_1_ROLE_ID = 0
+STRIKE_2_ROLE_ID = 0
+CAN_VIEW_ALL_ROLE = 0
+PLACEMENT_STAFF = 0
+
+# Roles allowed to use duplication tools (set to role IDs)
+DUP_ROLE_1 = 0
+DUP_ROLE_2 = 0
+DUP_ROLE_3 = 0
+
+# Placement queue roles that should be removed during placement
+PLACEMENT_QUEUE_ROLE_IDS = [
+    0,
+    0,
+]
+
+# Google Sheets / local backup
+GSHEET_CREDS_FILE = "credentials.json"  # path to service account JSON
+GSHEET_ID = ""                            # Google Sheet ID
+SPREADSHEET_PATH = "strike_log.xlsx"     # local backup path
+
+# Optional: override the values above in production with env vars or a secrets manager

@@ -1,269 +1,44 @@
-# R2-D2 Bot
+# R2‑D2 Bot
 
-A moderation and utility bot for Discord featuring:
+Lightweight Discord moderation and utility bot focused on strike tracking,
+placement logging, role/channel utilities, and robust Google Sheets failover.
 
-- Strike management with Google Sheets + local backup
-- Strike appeals
-- Placement logging with evidence attachments
-- Category duplication
-- Role duplication
-- Channel permission migration
-- Role and channel ID utilities
-- Automatic Google Sheets failover and recovery
+Key features
+- Strike management (writes to Google Sheets and a local Excel fallback)
+- Strike appeals and demotion handling
+- Placement logging with evidence attachments (files are hosted on Discord)
+- Category/role duplication and permission migration helpers
+- ID utilities for quick role/channel lookups
 
----
+Requirements
+- Python 3.10+
+- See `requirements.txt` for pinned dependencies
 
-# Requirements
-
-## Python
-
-Python 3.10+ is recommended.
-
-Install dependencies:
-
+Install
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Required packages:
-
-- discord.py
-- openpyxl
-- gspread
-- google-auth
-
----
-
-# Project Structure
-
-```text
-.
-├── bot.py
-├── fields.py
-├── requirements.txt
-├── credentials.json
-└── strike_log.xlsx
+Quickstart (local)
+1. Copy `fields.py.example` → `fields.py` (or edit `fields.py`) and fill values.
+2. Place your Google service account JSON (recommended name: `credentials.json`).
+3. Run:
+```bash
+python bot.py
 ```
 
----
-
-# Discord Bot Setup
-
-## 1. Create the Application
-
-Go to:
-
-https://discord.com/developers/applications
-
-1. Click **New Application**
-2. Enter a name
-3. Click **Create**
-
----
-
-## 2. Create the Bot
-
-Go to:
-
-**Bot → Add Bot**
-
-Then:
-
-- Reset Token
-- Copy the token
-
-You will place this into:
-
-```python
-BOT_TOKEN = "YOUR_TOKEN"
-```
-
-inside `fields.py`.
-
----
-
-## 3. Enable Privileged Intents
-
-Under **Bot → Privileged Gateway Intents**:
-
-Enable:
-
-✅ Server Members Intent
-
-No other intents are required.
-
----
-
-## 4. Invite the Bot
-
-Go to:
-
-**OAuth2 → URL Generator**
-
-### Scopes
-
-- bot
-- applications.commands
-
-### Bot Permissions
-
-- View Channels
-- Send Messages
-- Embed Links
-- Read Message History
-- Manage Roles
-- Manage Channels
-- Moderate Members
-- Attach Files
-
-Open the generated URL and invite the bot.
-
----
-
-# IMPORTANT: Role Hierarchy
-
-The bot's role MUST be above:
-
-- Strike roles
-- Placement roles
-- Any role the bot will assign
-- Any role whose permissions will be modified
-
-Otherwise Discord will reject the action.
-
----
-
-# Google Sheets Setup
-
-The strike system uses both:
-
-- Google Sheets
-- Local Excel backup (`strike_log.xlsx`)
-
----
-
-## Create the Sheet
-
-Go to:
-
-https://sheets.google.com
-
-Create a new **native Google Sheet**.
-
-Do NOT use an uploaded `.xlsx` file.
-
-Copy the Sheet ID:
-
-```text
-https://docs.google.com/spreadsheets/d/SHEET_ID_HERE/edit
-```
-
----
-
-## Enable APIs
-
-Go to:
-
-https://console.cloud.google.com
-
-Create or select a project.
-
-Enable:
-
-- Google Sheets API
-- Google Drive API
-
----
-
-## Create Service Account
-
-Go to:
-
-APIs & Services → Credentials → Create Credentials → Service Account
-
-Then:
-
-1. Open the service account
-2. Go to Keys
-3. Add Key
-4. JSON
-
-Save the file as:
-
-```text
-credentials.json
-```
-
-in the bot folder.
-
----
-
-## Share the Sheet
-
-Open:
-
-```json
-"client_email"
-```
-
-inside `credentials.json`.
-
-Copy the email.
-
-Open your Google Sheet:
-
-Share → Add People
-
-Paste the email and give it:
-
-Editor permissions.
-
----
-
-# Security
-
-Never upload:
-
-- credentials.json
-- strike_log.xlsx
-
-to a public repository.
-
-Recommended `.gitignore`:
-
-```gitignore
-credentials.json
-strike_log.xlsx
-__pycache__/
-*.pyc
-```
-
----
-
-# Enable Developer Mode
-
-Discord:
-
-User Settings → Advanced → Developer Mode
-
-This allows you to copy:
-
-- Server IDs
-- Channel IDs
-- Role IDs
-
----
-
-# Configuration
-
-All configuration is stored inside:
-
-```text
-fields.py
-```
-
-Example:
-
+Configuration
+All runtime configuration lives in `fields.py`. At minimum you should set:
+- `BOT_TOKEN` — your bot token
+- `GUILD_ID` — guild to sync slash commands to
+- Channel and role IDs: `LOG_CHANNEL_ID`, `PLACE_CHANNEL_ID`, `PLACEMENT_CMD_CHANNEL`, `SHEETS_ALERT_CHANNEL`, `STRIKE_1_ROLE_ID`, `STRIKE_2_ROLE_ID`, `CAN_VIEW_ALL_ROLE`, `PLACEMENT_STAFF` and duplication permission roles (`DUP_ROLE_1/2/3`).
+- `GSHEET_CREDS_FILE` — path to service account JSON (default: `credentials.json`)
+- `GSHEET_ID` — Google Sheet ID for strike logs
+- `SPREADSHEET_PATH` — local backup path (default: `strike_log.xlsx`)
+
+fields.py (example snippet)
 ```python
 BOT_TOKEN = ""
 GUILD_ID = 0
@@ -283,10 +58,7 @@ DUP_ROLE_1 = 0
 DUP_ROLE_2 = 0
 DUP_ROLE_3 = 0
 
-PLACEMENT_QUEUE_ROLE_IDS = [
-    0,
-    0,
-]
+PLACEMENT_QUEUE_ROLE_IDS = [0, 0]
 
 GSHEET_CREDS_FILE = "credentials.json"
 GSHEET_ID = ""
@@ -294,108 +66,54 @@ GSHEET_ID = ""
 SPREADSHEET_PATH = "strike_log.xlsx"
 ```
 
----
+Google Sheets setup (brief)
+1. Create a Google Cloud project and enable Sheets & Drive APIs.
+2. Create a service account, add a JSON key, and save it as `credentials.json`.
+3. Share your Google Sheet with the service account `client_email` with Editor access.
+4. Put the sheet ID into `GSHEET_ID`.
 
-# Configuration Variables
-
-| Variable | Description |
-|----------|-------------|
-| BOT_TOKEN | Discord bot token |
-| GUILD_ID | Server ID |
-| LOG_CHANNEL_ID | Strike log channel |
-| PLACE_CHANNEL_ID | Placement log channel |
-| PLACEMENT_CMD_CHANNEL | Channel where placement commands can be used |
-| SHEETS_ALERT_CHANNEL | Google Sheets failure alerts |
-| STRIKE_1_ROLE_ID | Strike 1 role |
-| STRIKE_2_ROLE_ID | Strike 2 role |
-| CAN_VIEW_ALL_ROLE | Moderator role |
-| PLACEMENT_STAFF | Additional placement role |
-| DUP_ROLE_1 | Duplication permission role |
-| DUP_ROLE_2 | Duplication permission role |
-| DUP_ROLE_3 | Duplication permission role |
-| PLACEMENT_QUEUE_ROLE_IDS | Queue roles automatically removed during placement |
-| GSHEET_CREDS_FILE | Path to service account JSON |
-| GSHEET_ID | Google Sheet ID |
-| SPREADSHEET_PATH | Local strike backup |
-
----
-
-# Running the Bot
-
-```bash
-python bot.py
+Security
+- Never commit `credentials.json` or `strike_log.xlsx` to version control.
+- Add these to `.gitignore`:
+```
+credentials.json
+strike_log.xlsx
+__pycache__/
+*.pyc
 ```
 
-On first startup:
+Permissions & Bot role
+- The bot requires these permissions: View Channels, Send Messages, Embed Links, Read Message History, Manage Roles, Manage Channels, Moderate Members, and Attach Files.
+- Ensure the bot's highest role is above any role it needs to manage/assign.
 
-- slash commands sync automatically
-- `strike_log.xlsx` is created automatically if missing
-- Google Sheet headers are created automatically if the sheet is empty
+Commands overview
+- Moderation: `/strike`, `/viewstrikes`, `/strikeappeal`, `/updatestrikes`
+- Placement: `/place`, `/skipplace`
+- Duplication / migration: `/dupcategory`, `/duprole`, `/cutchannelperms`, `/cutcategoryperms`
+- Utilities: `/roleids`, `/channelids`
 
----
+Behavior notes
+- On write, the bot attempts Google Sheets first then a local Excel fallback. If either destination fails, moderators are alerted in `SHEETS_ALERT_CHANNEL`.
+- Use `/updatestrikes` to sync local backup to Google Sheets after recovering cloud access.
 
-# Commands
+Running in production
+- Run under a process manager (systemd, pm2, Docker) to ensure automatic restarts.
 
-## Moderation
+Troubleshooting
+- If slash commands don't appear, ensure `GUILD_ID` is set and the bot has `applications.commands` scope; the bot syncs commands to the configured guild on startup.
+- Google Sheets errors usually mean `GSHEET_CREDS_FILE` or `GSHEET_ID` are incorrect, or the service account wasn't shared with the sheet.
 
-- `/strike`
-- `/viewstrikes`
-- `/strikeappeal`
-- `/updatestrikes`
+Files
+- `bot.py` — main bot implementation
+- `fields.py` — configuration values you must edit
+- `requirements.txt` — Python dependencies
+- `credentials.json` — Google service account (keep secret)
+- `strike_log.xlsx` — local backup created automatically
 
-## Placement
+License
+See `LICENSE.md`.
 
-- `/place`
-- `/skipplace`
-
-## Duplication Utilities
-
-- `/dupcategory`
-- `/duprole`
-- `/cutchannelperms`
-
-## ID Utilities
-
-- `/roleids`
-- `/channelids`
-
----
-
-# Google Sheets Failover
-
-Every strike write attempts:
-
-1. Google Sheets
-2. Local Excel backup
-
-If either fails:
-
-- an alert is posted in `SHEETS_ALERT_CHANNEL`
-- moderators are pinged
-- data is preserved whenever at least one destination succeeds
-
-When Google Sheets comes back online, run:
-
-```text
-/updatestrikes
-```
-
-to restore the cloud copy.
-
----
-
-# Files
-
-| File | Purpose |
-|------|----------|
-| bot.py | Main bot source |
-| fields.py | Configuration values |
-| requirements.txt | Python dependencies |
-| credentials.json | Google service account credentials |
-| strike_log.xlsx | Local backup database |
-
----
-
-# License
-
-This project is source-available. See `LICENSE.md` for licensing information.
+If you'd like, I can:
+- generate a `fields.py.example` from the variables found in `bot.py` and `fields.py`,
+- add a minimal systemd service or Dockerfile for deployment,
+- or run a quick static check on `bot.py` for obvious issues.
