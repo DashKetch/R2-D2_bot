@@ -36,4 +36,27 @@ GSHEET_CREDS_FILE = "credentials.json"  # path to service account JSON
 GSHEET_ID = ""                            # Google Sheet ID
 SPREADSHEET_PATH = "strike_log.xlsx"     # local backup path
 
+# Cleanup Task
+CLEANUP_TIME_LOCAL = "HH:MM"  # HH:MM local machine time - should be in 24h format
+CLEANUP_CHANNEL_IDS    = [                        # Channels to clean up daily
+    0,
+    0
+]
+CLEANUP_EXEMPT_ROLE_ID = 0       # Messages from members with this role are kept
+
+def get_cleanup_time_utc() -> str:
+    """
+    Returns the appropriate UTC cleanup time based on whether
+    the machine's local timezone is currently observing DST.
+    """
+    now = datetime.now().astimezone()
+
+    # dst() returns a timedelta of 0 when DST is inactive.
+    is_dst = bool(now.dst() and now.dst().total_seconds() != 0)
+
+    if is_dst:
+        return CLEANUP_TIME_UTC_DAYLIGHT_SAVINGS
+    else:
+        return CLEANUP_TIME_UTC_STANDARD
+
 # Optional: override the values above in production with env vars or a secrets manager
