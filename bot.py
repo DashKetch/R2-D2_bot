@@ -1786,7 +1786,8 @@ async def copyserver(
     # hierarchy ends up in the right order. Skip @everyone (it always exists).
     source_roles = sorted(
         [r for r in guild.roles if r.name != "@everyone"],
-        key=lambda r: r.position
+        key=lambda r: r.position,
+        reverse=True  # highest position first so the stack ends up in the correct order
     )
 
     # role_map: source role ID → newly created target role
@@ -1810,13 +1811,16 @@ async def copyserver(
             errors.append(f"Role `{r.name}`: {e}")
             roles_fail += 1
 
-    # Re-apply positions — discord.py expects a list of (role, position) tuples
+    # Re-apply positions.
+    # source_roles is sorted ascending by position (lowest first).
+    # We assign positions 1..N in that same order so the hierarchy matches.
+    # discord.py expects a dict of {role: new_position}.
     try:
-        position_payload = [
-            (role_map[r.id], r.position)
-            for r in source_roles
+        position_payload = {
+            role_map[r.id]: idx + 1
+            for idx, r in enumerate(source_roles)
             if r.id in role_map
-        ]
+        }
         await target.edit_role_positions(position_payload,
                                          reason=f"/copyserver role positions from {guild.name}")
     except Exception as e:
