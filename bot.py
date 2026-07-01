@@ -1,9 +1,9 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as dt_time
 import os
 import gspread
 from google.oauth2.service_account import Credentials
@@ -14,6 +14,8 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
+
+_last_cleanup_date = None  # Tracks the last date the cleanup task ran to avoid multiple runs in the same day
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -416,6 +418,94 @@ async def on_ready():
     tree.copy_global_to(guild=guild)
     await tree.sync(guild=guild)
     print(f"Logged in as {bot.user} | Slash commands synced to guild {GUILD_ID}")
+
+    if not daily_channel_cleanup.is_running():
+        daily_channel_cleanup.start()
+
+
+# ── Daily channel cleanup task ─────────────────────────────────────────────────
+
+@tasks.loop(minutes=60)
+async def daily_channel_cleanup():
+    global _last_cleanup_date
+
+    now = datetime.now().astimezone()
+    print(
+        f"[Cleanup Debug] now={now.isoformat()} "
+        f"time={now.strftime('%H:%M')} "
+        f"target={CLEANUP_TIME_LOCAL}"
+    )
+
+    if now.strftime("%H:%M") != CLEANUP_TIME_LOCAL:
+        return
+
+    print("[Cleanup Debug] Time matched! Running cleanup...")
+
+    today = now.date()
+    if _last_cleanup_date == today:
+        print("[Cleanup Debug] Already ran today.")
+        return
+
+    _last_cleanup_date = today
+
+    guild = bot.get_guild(GUILD_ID)
+    print(f"[Cleanup Debug] Guild found: {guild is not None}")
+
+    if guild is None:
+        print("[Cleanup] Guild not found — skipping run.")
+        return
+
+    exempt_role = guild.get_role(CLEANUP_EXEMPT_ROLE_ID)
+    print(f"[Cleanup Debug] Exempt role found: {exempt_role is not None}")
+
+    if exempt_role is None:
+        print("[Cleanup] CLEANUP_EXEMPT_ROLE_ID not found — skipping run.")
+        return
+
+    print(f"[Cleanup] Starting daily cleanup across {len(CLEANUP_CHANNEL_IDS)} channel(s).")
+
+    for channel_id in CLEANUP_CHANNEL_IDS:
+        channel = guild.get_channel(channel_id)
+
+        if channel is None:
+            print(f"[Cleanup] Channel {channel_id} not found — skipping.")
+            continue
+
+        if not isinstance(channel, discord.TextChannel):
+            print(f"[Cleanup] Channel {channel_id} is not a text channel — skipping.")
+            continue
+
+        def _is_not_exempt(message: discord.Message) -> bool:
+            member = guild.get_member(message.author.id)
+
+            # Purge bot/webhook/deleted users
+            if member is None:
+                return True
+
+            return exempt_role not in member.roles
+
+        try:
+            deleted = await channel.purge(
+                limit=None,
+                check=_is_not_exempt,
+                bulk=False,  # allows deleting messages older than 14 days
+            )
+
+            await channel.send(
+                f"{channel.name} is an auto-cleanup channel."
+            )
+
+            print(
+                f"[Cleanup] Deleted {len(deleted)} message(s) in #{channel.name}."
+            )
+
+        except discord.Forbidden:
+            print(f"[Cleanup] Missing permissions to purge #{channel.name}.")
+
+        except discord.HTTPException as e:
+            print(f"[Cleanup] Failed to purge #{channel.name}: {e}")
+
+    print("[Cleanup] Daily cleanup finished.")
 
 
 # ── /strike ───────────────────────────────────────────────────────────────────
