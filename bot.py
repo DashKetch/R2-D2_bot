@@ -77,14 +77,7 @@ async def _alert_sheets_fallback(operation: str, failures: list):
 
 HEADERS = ["Moderator", "Date command used", "Username", "Strike (1 or 2)", "Reason"]
 
-# ── Google Sheets connection ──────────────────────────────────────────────────
-
 def _get_gsheet():
-    """
-    Return the first worksheet of the configured Google Sheet.
-    Raises an exception if credentials are missing or the sheet can't be reached —
-    callers should catch and fall back to the local xlsx.
-    """
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -93,7 +86,6 @@ def _get_gsheet():
     client = gspread.authorize(creds)
     sheet  = client.open_by_key(GSHEET_ID)
     ws     = sheet.get_worksheet(0)
-    # Write header row if the sheet is completely empty
     if ws.row_count == 0 or ws.cell(1, 1).value is None:
         ws.update("A1:E1", [HEADERS])
         ws.format("A1:E1", {
@@ -103,8 +95,6 @@ def _get_gsheet():
         })
     return ws
 
-
-# ── Local xlsx fallback helpers ───────────────────────────────────────────────
 
 def _cell_style(ws, row: int, col: int, value, strike_num_col: bool = False, strike_num: int = 1):
     fill_color     = "D6E4F0" if (row % 2 == 0) else "FFFFFF"
@@ -164,10 +154,7 @@ def _local_append(moderator: str, username: str, strike_number: int, reason: str
     wb.save(SPREADSHEET_PATH)
 
 
-# ── Primary API functions (Google Sheets + local, both attempted) ─────────────
-
 def _append_strike_row(moderator: str, username: str, strike_number: int, reason: str):
-    """Write a strike row to both Google Sheets and local xlsx. Alerts if either fails."""
     import asyncio
     row_data = [
         moderator,
@@ -177,8 +164,6 @@ def _append_strike_row(moderator: str, username: str, strike_number: int, reason
         reason,
     ]
     failures = []
-
-    # ── Google Sheets ─────────────────────────────────────────────────────────
     try:
         ws = _get_gsheet()
         ws.append_row(row_data, value_input_option="USER_ENTERED")
@@ -197,7 +182,6 @@ def _append_strike_row(moderator: str, username: str, strike_number: int, reason
         print(f"[Sheets] Google Sheets write failed: {e}")
         failures.append({"target": "Google Sheets", "error": str(e)})
 
-    # ── Local xlsx ────────────────────────────────────────────────────────────
     try:
         _local_append(moderator, username, strike_number, reason)
         print("[Sheets] Strike row written to local xlsx.")
@@ -211,7 +195,6 @@ def _append_strike_row(moderator: str, username: str, strike_number: int, reason
 
 
 def _get_strikes_for_user(target: discord.Member) -> dict:
-    """Read strike entries for a user from Google Sheets, fallback to local xlsx."""
     target_str = str(target).lower()
 
     def _parse_rows(rows):
@@ -256,10 +239,7 @@ def _get_strikes_for_user(target: discord.Member) -> dict:
 
 
 def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
-    """Remove a strike from both Google Sheets and local xlsx. Alerts if either fails."""
     target_str = str(target).lower()
-
-    # ── Google Sheets ─────────────────────────────────────────────────────────
     try:
         ws       = _get_gsheet()
         all_rows = ws.get_all_values()
@@ -294,7 +274,6 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
                     "deleted_row": None, "demoted_row": None}
 
         deleted_row = demoted_row = None
-
         if appeal_num == 2:
             target_entry = strike2_rows[-1]
             deleted_row  = target_entry
@@ -322,7 +301,6 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
         print(f"[Sheets] Google Sheets appeal failed: {e}")
         cloud_result = {"success": False, "error": str(e)}
 
-    # ── Local xlsx (always attempted) ─────────────────────────────────────────
     local_result = {"success": False, "error": "Not attempted"}
     try:
         _init_spreadsheet()
@@ -388,7 +366,6 @@ def _appeal_strike(target: discord.Member, appeal_num: int) -> dict:
         print(f"[Sheets] Local xlsx appeal failed: {e}")
         local_result = {"success": False, "error": str(e)}
 
-    # ── Alert if either failed ────────────────────────────────────────────────
     import asyncio
     failures = []
     if not cloud_result["success"]:
@@ -418,7 +395,6 @@ async def on_ready():
     tree.copy_global_to(guild=guild)
     await tree.sync(guild=guild)
     print(f"Logged in as {bot.user} | Slash commands synced to guild {GUILD_ID}")
-
     if not daily_channel_cleanup.is_running():
         daily_channel_cleanup.start()
 
@@ -776,7 +752,6 @@ async def place(
     invoker        = interaction.user
     guild          = interaction.guild
 
-    # ── Channel restriction ───────────────────────────────────────────────────
     if interaction.channel_id != PLACEMENT_CMD_CHANNEL:
         await interaction.followup.send(
             f"❌ This command can only be used in <#{PLACEMENT_CMD_CHANNEL}>.",
@@ -790,7 +765,6 @@ async def place(
         (placement_role and placement_role in invoker.roles)
     )
 
-    # ── Permission check ──────────────────────────────────────────────────────
     if not has_permission:
         fail_embed = discord.Embed(
             title="🚫 Unauthorized /place Attempt",
@@ -806,7 +780,6 @@ async def place(
             "❌ You don't have permission to use `/place`.", ephemeral=True)
         return
 
-    # ── Assign role ───────────────────────────────────────────────────────────
     if role in username.roles:
         await interaction.followup.send(
             f"⚠️ {username.mention} already has {role.mention}. No action taken.")
@@ -820,7 +793,6 @@ async def place(
             f"Make sure my role is above it in the hierarchy.", ephemeral=True)
         return
 
-    # ── Remove placement queue roles ──────────────────────────────────────────
     roles_to_remove = [
         guild.get_role(rid)
         for rid in PLACEMENT_QUEUE_ROLE_IDS
@@ -835,11 +807,9 @@ async def place(
         except discord.Forbidden:
             pass
 
-    # ── Collect attachment URLs ───────────────────────────────────────────────
     attachments = [a for a in [file1, file2, file3, file4, file5,
                                 file6, file7, file8, file9, file10] if a is not None]
 
-    # ── Build the log embed ───────────────────────────────────────────────────
     place_channel = guild.get_channel(PLACE_CHANNEL_ID)
     if not place_channel:
         await interaction.followup.send(
@@ -918,7 +888,6 @@ async def skipplace(
     invoker        = interaction.user
     guild          = interaction.guild
 
-    # ── Channel restriction ───────────────────────────────────────────────────
     if interaction.channel_id != PLACEMENT_CMD_CHANNEL:
         await interaction.followup.send(
             f"❌ This command can only be used in <#{PLACEMENT_CMD_CHANNEL}>.",
@@ -932,7 +901,6 @@ async def skipplace(
         (placement_role and placement_role in invoker.roles)
     )
 
-    # ── Permission check ──────────────────────────────────────────────────────
     if not has_permission:
         fail_embed = discord.Embed(
             title="🚫 Unauthorized /skipplace Attempt",
@@ -948,7 +916,6 @@ async def skipplace(
             "❌ You don't have permission to use `/skipplace`.", ephemeral=True)
         return
 
-    # ── Assign role ───────────────────────────────────────────────────────────
     if role in username.roles:
         await interaction.followup.send(
             f"⚠️ {username.mention} already has {role.mention}. No action taken.")
@@ -962,7 +929,6 @@ async def skipplace(
             f"Make sure my role is above it in the hierarchy.", ephemeral=True)
         return
 
-    # ── Remove placement queue roles ──────────────────────────────────────────
     roles_to_remove = [
         guild.get_role(rid)
         for rid in PLACEMENT_QUEUE_ROLE_IDS
@@ -977,7 +943,6 @@ async def skipplace(
         except discord.Forbidden:
             pass
 
-    # ── Post to place channel ─────────────────────────────────────────────────
     place_channel = guild.get_channel(PLACE_CHANNEL_ID)
     if not place_channel:
         await interaction.followup.send(
@@ -1743,6 +1708,264 @@ async def cutcategoryperms(
 
 @cutcategoryperms.error
 async def cutcategoryperms_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
+    except Exception:
+        pass
+
+
+# ── /copyserver ───────────────────────────────────────────────────────────────
+
+@tree.command(
+    name="copyserver",
+    description="Copy all roles, categories, and channels from this server into a target server.",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    target_guild_id = "ID of the server to copy into (bot must already be in it)",
+)
+async def copyserver(
+    interaction     : discord.Interaction,
+    target_guild_id : str,
+):
+    await interaction.response.defer(ephemeral=True)
+    invoker = interaction.user
+    guild   = interaction.guild   # source
+
+    # ── Permission check ──────────────────────────────────────────────────────
+    dup_role_1 = guild.get_role(DUP_ROLE_1)
+    dup_role_2 = guild.get_role(DUP_ROLE_2)
+    dup_role_3 = guild.get_role(DUP_ROLE_3)
+    has_permission = any(
+        role and role in invoker.roles
+        for role in (dup_role_1, dup_role_2, dup_role_3)
+    )
+    if not has_permission:
+        await interaction.followup.send(
+            "❌ You don't have permission to use `/copyserver`.", ephemeral=True)
+        return
+
+    # ── Validate target guild ID ──────────────────────────────────────────────
+    try:
+        target_guild_id_int = int(target_guild_id)
+    except ValueError:
+        await interaction.followup.send(
+            f"❌ `{target_guild_id}` is not a valid guild ID.", ephemeral=True)
+        return
+
+    target = bot.get_guild(target_guild_id_int)
+    if target is None:
+        await interaction.followup.send(
+            f"❌ Bot is not in a server with ID `{target_guild_id_int}`. "
+            f"Invite the bot to the target server first.", ephemeral=True)
+        return
+
+    if target.id == guild.id:
+        await interaction.followup.send(
+            "❌ Source and target servers must be different.", ephemeral=True)
+        return
+
+    # ── Progress update helper ────────────────────────────────────────────────
+    async def _progress(msg: str):
+        try:
+            await interaction.followup.send(msg, ephemeral=True)
+        except Exception:
+            pass
+
+    await _progress(
+        f"🔄 Starting copy from **{guild.name}** → **{target.name}**.\n"
+        f"This may take several minutes on large servers. You\'ll get updates as each stage completes."
+    )
+
+    errors = []
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STAGE 1 — Roles
+    # ══════════════════════════════════════════════════════════════════════════
+    # Sort by position ascending so lower roles are created first and the
+    # hierarchy ends up in the right order. Skip @everyone (it always exists).
+    source_roles = sorted(
+        [r for r in guild.roles if r.name != "@everyone"],
+        key=lambda r: r.position
+    )
+
+    # role_map: source role ID → newly created target role
+    role_map   = {}
+    roles_ok   = 0
+    roles_fail = 0
+
+    for r in source_roles:
+        try:
+            new_role = await target.create_role(
+                name        = r.name,
+                permissions = r.permissions,
+                colour      = r.colour,
+                hoist       = r.hoist,
+                mentionable = r.mentionable,
+                reason      = f"/copyserver from {guild.name} by {invoker}",
+            )
+            role_map[r.id] = new_role
+            roles_ok += 1
+        except Exception as e:
+            errors.append(f"Role `{r.name}`: {e}")
+            roles_fail += 1
+
+    # Re-apply positions — discord.py expects a list of (role, position) tuples
+    try:
+        position_payload = [
+            (role_map[r.id], r.position)
+            for r in source_roles
+            if r.id in role_map
+        ]
+        await target.edit_role_positions(position_payload,
+                                         reason=f"/copyserver role positions from {guild.name}")
+    except Exception as e:
+        errors.append(f"Role position reorder: {e}")
+
+    await _progress(f"✅ Stage 1/3 — Roles: **{roles_ok}** created, **{roles_fail}** failed.")
+
+    # ── Overwrite translator ──────────────────────────────────────────────────
+    def _translate_overwrites(source_overwrites: dict) -> dict:
+        """
+        Convert a channel's permission overwrites from source role/member IDs
+        to the corresponding new target roles.  Member overwrites are dropped
+        since members won't be the same across servers.
+        """
+        new_overwrites = {}
+        for target_obj, overwrite in source_overwrites.items():
+            if isinstance(target_obj, discord.Role):
+                if target_obj.name == "@everyone":
+                    # @everyone always exists; grab it from the target guild
+                    new_overwrites[target.default_role] = overwrite
+                elif target_obj.id in role_map:
+                    new_overwrites[role_map[target_obj.id]] = overwrite
+                # else: role wasn't created (failed) — skip its overwrite
+            # Skip member-level overwrites — members differ between servers
+        return new_overwrites
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STAGE 2 — Categories
+    # ══════════════════════════════════════════════════════════════════════════
+    source_categories = sorted(
+        [c for c in guild.channels if isinstance(c, discord.CategoryChannel)],
+        key=lambda c: c.position
+    )
+
+    # category_map: source category ID → new target category
+    category_map   = {}
+    cats_ok        = 0
+    cats_fail      = 0
+
+    for cat in source_categories:
+        try:
+            new_cat = await target.create_category(
+                name       = cat.name,
+                position   = cat.position,
+                overwrites = _translate_overwrites(cat.overwrites),
+                reason     = f"/copyserver from {guild.name} by {invoker}",
+            )
+            category_map[cat.id] = new_cat
+            cats_ok += 1
+        except Exception as e:
+            errors.append(f"Category `{cat.name}`: {e}")
+            cats_fail += 1
+
+    await _progress(f"✅ Stage 2/3 — Categories: **{cats_ok}** created, **{cats_fail}** failed.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STAGE 3 — Channels
+    # ══════════════════════════════════════════════════════════════════════════
+    # Process uncategorised channels first, then categorised ones.
+    source_channels = sorted(
+        [c for c in guild.channels if not isinstance(c, discord.CategoryChannel)],
+        key=lambda c: c.position
+    )
+
+    channels_ok   = 0
+    channels_fail = 0
+
+    for ch in source_channels:
+        try:
+            new_cat       = category_map.get(ch.category_id)  # None if uncategorised or category failed
+            new_overwrites = _translate_overwrites(ch.overwrites)
+
+            if isinstance(ch, discord.TextChannel):
+                await target.create_text_channel(
+                    name           = ch.name,
+                    category       = new_cat,
+                    position       = ch.position,
+                    topic          = ch.topic,
+                    slowmode_delay = ch.slowmode_delay,
+                    nsfw           = ch.nsfw,
+                    overwrites     = new_overwrites,
+                    reason         = f"/copyserver from {guild.name} by {invoker}",
+                )
+            elif isinstance(ch, discord.VoiceChannel):
+                await target.create_voice_channel(
+                    name       = ch.name,
+                    category   = new_cat,
+                    position   = ch.position,
+                    bitrate    = min(ch.bitrate, target.bitrate_limit),
+                    user_limit = ch.user_limit,
+                    overwrites = new_overwrites,
+                    reason     = f"/copyserver from {guild.name} by {invoker}",
+                )
+            elif isinstance(ch, discord.StageChannel):
+                await target.create_stage_channel(
+                    name       = ch.name,
+                    category   = new_cat,
+                    position   = ch.position,
+                    overwrites = new_overwrites,
+                    reason     = f"/copyserver from {guild.name} by {invoker}",
+                )
+            elif isinstance(ch, discord.ForumChannel):
+                await target.create_forum(
+                    name           = ch.name,
+                    category       = new_cat,
+                    position       = ch.position,
+                    topic          = ch.topic,
+                    slowmode_delay = ch.slowmode_delay,
+                    nsfw           = ch.nsfw,
+                    overwrites     = new_overwrites,
+                    reason         = f"/copyserver from {guild.name} by {invoker}",
+                )
+            else:
+                # Announcement / News — fall back to text
+                await target.create_text_channel(
+                    name       = ch.name,
+                    category   = new_cat,
+                    position   = ch.position,
+                    overwrites = new_overwrites,
+                    reason     = f"/copyserver from {guild.name} (fallback) by {invoker}",
+                )
+            channels_ok += 1
+
+        except Exception as e:
+            errors.append(f"Channel `{ch.name}`: {e}")
+            channels_fail += 1
+
+    await _progress(f"✅ Stage 3/3 — Channels: **{channels_ok}** created, **{channels_fail}** failed.")
+
+    # ── Final summary ─────────────────────────────────────────────────────────
+    summary = (
+        f"🏁 **Copy complete** — **{guild.name}** → **{target.name}**\n"
+        f"• Roles: {roles_ok} created\n"
+        f"• Categories: {cats_ok} created\n"
+        f"• Channels: {channels_ok} created\n"
+    )
+    if errors:
+        error_text = "\n".join(f"• {e}" for e in errors[:20])
+        if len(errors) > 20:
+            error_text += f"\n…and {len(errors) - 20} more (check console)"
+        summary += f"\n⚠️ **{len(errors)} error(s):**\n{error_text}"
+    else:
+        summary += "\n✅ No errors."
+
+    await _progress(summary)
+
+
+@copyserver.error
+async def copyserver_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     try:
         await _safe_send(interaction)(f"❌ Unexpected error: {error}", ephemeral=True)
     except Exception:
